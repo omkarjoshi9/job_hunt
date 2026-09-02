@@ -17,15 +17,6 @@ GitHub Actions schedules the work. Python runs collect, score, and digest. Teleg
 
 Hunt config under `config/` is gitignored (`*.example.yaml` stubs stay in git). Workflow YAML stays in git.
 
-## Design constraints
-
-- No auto-apply.
-- Real hunt YAML is local or stored in GitHub secrets. Only `config/*.example.yaml` is public.
-- LinkedIn, Discord, Otta, Hugging Face jobs HTML, and LLMHire are on a kill list and stay disabled.
-- HTTP-only fetching (`scrapling`, `curl_cffi`, `browserforge`, `protego`). No Playwright, Chromium, `scrapling install`, or stealth fetchers.
-- Collect does not call an LLM. Scoring runs later.
-- An empty digest after a successful collect is silent. `COLLECT FAILED` and `SCORE FAILED` are sent as Telegram alerts.
-
 ## Pipeline
 
 ```
