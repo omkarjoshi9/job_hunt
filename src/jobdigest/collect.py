@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import sys
 import time
 from collections.abc import Callable
@@ -36,26 +35,6 @@ FetchFn = Callable[
     FetchResult,
 ]
 TelegramHttpPost = Callable[..., object]
-
-
-def enable_overrides() -> set[str]:
-    raw = os.environ.get("JOBDIGEST_ENABLE") or ""
-    return {part.strip() for part in raw.split(",") if part.strip()}
-
-
-def _company_enabled(company: CompanyConfig, overrides: set[str]) -> bool:
-    if company.enabled:
-        return True
-    return company.id in overrides or f"company:{company.id}" in overrides
-
-
-def _row_enabled(row: dict, *, kind: str, overrides: set[str]) -> bool:
-    if row.get("enabled"):
-        return True
-    ident = str(row.get("id") or row.get("name") or "")
-    if not ident:
-        return False
-    return f"{kind}:{ident}" in overrides
 
 
 def _row_company(row: dict) -> CompanyConfig:
@@ -196,17 +175,19 @@ def run(
     if fetch_fn is None:
         fetch_fn = _default_fetch
 
-    overrides = enable_overrides()
-    log.info(
-        "collect start ats_only=%s enable=%s",
-        ats_only,
-        ",".join(sorted(overrides)) or "(none)",
-    )
     profile = load_profile()
     payload = load_companies()
     rows = payload.get("companies") if isinstance(payload, dict) else None
     if not isinstance(rows, list):
         rows = []
+    yaml_enabled = sum(
+        1 for raw in rows if isinstance(raw, dict) and bool(raw.get("enabled"))
+    )
+    log.info(
+        "collect start ats_only=%s yaml_enabled=%s",
+        ats_only,
+        yaml_enabled,
+    )
 
     own_client = False
     conn = connect(db_path)
@@ -241,12 +222,8 @@ def run(
                 company.enabled,
             )
             ats_key = company.ats.strip().lower()
-            if not _company_enabled(company, overrides):
-                log.debug(
-                    "company skip id=%s yaml_enabled=%s",
-                    company.id,
-                    company.enabled,
-                )
+            if not company.enabled:
+                log.debug("company skip id=%s yaml_enabled=false", company.id)
                 continue
             if ats_key not in _KNOWN_ATS:
                 log.debug("company skip id=%s unknown_ats", company.id)
@@ -324,12 +301,12 @@ def run(
             portal_rows = [
                 row
                 for row in _dict_rows(load_portals(), "portals")
-                if _row_enabled(row, kind="portal", overrides=overrides)
+                if bool(row.get("enabled"))
             ]
             feed_rows = [
                 row
                 for row in _dict_rows(load_feeds(), "feeds")
-                if _row_enabled(row, kind="feed", overrides=overrides)
+                if bool(row.get("enabled"))
             ]
             log.info("portals enabled=%s feeds enabled=%s", len(portal_rows), len(feed_rows))
             last_host: dict = {}

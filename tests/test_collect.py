@@ -1,9 +1,14 @@
 import json
 from datetime import datetime, timezone
+from pathlib import Path
+
+import yaml
 
 from jobdigest.ats.base import FetchResult, FetchStatus, NormalizedJob
 from jobdigest.collect import run
 from jobdigest.db import connect
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _intern_job(url: str, ext: str) -> NormalizedJob:
@@ -86,7 +91,10 @@ def test_collect_all_error_fails(monkeypatch, tmp_path, capsys):
 
 
 def test_collect_default_yaml_no_enabled(monkeypatch, tmp_path):
-    monkeypatch.setenv("JOBDIGEST_ENABLE", "")
+    payload = yaml.safe_load(
+        (ROOT / "config" / "companies.example.yaml").read_text(encoding="utf-8")
+    )
+    monkeypatch.setattr("jobdigest.collect.load_companies", lambda: payload)
     db = tmp_path / "jobs.db"
     code = run(db_path=db, sleep=lambda _: None)
     assert code == 0
@@ -119,26 +127,24 @@ class _OkPost:
     text = '{"ok": true}'
 
 
-def test_collect_jobdigest_enable_fetches_disabled_yaml(monkeypatch, tmp_path):
+def test_collect_disabled_yaml_is_not_fetched(monkeypatch, tmp_path):
     jobs = [_intern_job("https://example.com/jobs/1", "1")]
     calls = {"n": 0}
 
     def fetch_fn(company, client, sleep):
-        _ = client, sleep
+        _ = company, client, sleep
         calls["n"] += 1
-        assert company.id == "example"
         return FetchResult(FetchStatus.OK, 200, jobs)
 
-    monkeypatch.setenv("JOBDIGEST_ENABLE", "example")
     monkeypatch.setattr("jobdigest.collect.load_companies", _disabled_companies)
     db = tmp_path / "jobs.db"
     code = run(db_path=db, sleep=lambda _: None, fetch_fn=fetch_fn)
     assert code == 0
-    assert calls["n"] == 1
+    assert calls["n"] == 0
     conn = connect(db)
     try:
         count = conn.execute("SELECT COUNT(*) AS n FROM jobs").fetchone()["n"]
-        assert count == 1
+        assert count == 0
     finally:
         conn.close()
 

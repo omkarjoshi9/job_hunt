@@ -105,4 +105,6 @@ def test_all_seed_companies_disabled():
     unimplemented = {row["id"]: row["ats"] for row in rows if row["ats"] in ("getro", "workday")}
     assert unimplemented["peakxv"] == "getro"
     assert unimplemented["surge"] == "getro"
+    assert unimplemented["nexusvp"] == "getro"
     assert unimplemented["flipkart"] == "workday"
+    assert unimplemented["fractal"] == "workday"

@@ -1,13 +1,27 @@
 name: digest
 on:
   schedule:
-    - cron: "30 4 * * *"
+    - cron: "*/15 * * * *"
   workflow_dispatch:
 concurrency:
   group: jobdigest-digest
   cancel-in-progress: false
 jobs:
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      due: ${{ steps.gate.outputs.due }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: gate
+        name: Schedule gate
+        env:
+          PYTHONPATH: src
+          JOBDIGEST_CRON: ${{ secrets.JOBDIGEST_CRON }}
+        run: python3 -m jobdigest.cron
   digest:
+    needs: gate
+    if: needs.gate.outputs.due == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

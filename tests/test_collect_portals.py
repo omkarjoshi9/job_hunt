@@ -133,7 +133,10 @@ def test_ats_only_skips_portals_and_feeds(monkeypatch, tmp_path):
 
 
 def test_collect_default_yaml_no_enabled_portals(monkeypatch, tmp_path):
-    monkeypatch.setenv("JOBDIGEST_ENABLE", "")
+    payload = yaml.safe_load(
+        (ROOT / "config" / "companies.example.yaml").read_text(encoding="utf-8")
+    )
+    monkeypatch.setattr("jobdigest.collect.load_companies", lambda: payload)
     db = tmp_path / "jobs.db"
     code = run(db_path=db, sleep=lambda _: None)
     assert code == 0
@@ -146,7 +149,7 @@ def test_collect_default_yaml_no_enabled_portals(monkeypatch, tmp_path):
 
 
 def test_cli_collect_ats_only(monkeypatch, tmp_path):
-    monkeypatch.setenv("JOBDIGEST_ENABLE", "")
+    monkeypatch.setattr("jobdigest.collect.load_companies", lambda: {"companies": []})
     db = tmp_path / "jobs.db"
     assert main(["collect", "--ats-only", "--db", str(db)]) == 0
 

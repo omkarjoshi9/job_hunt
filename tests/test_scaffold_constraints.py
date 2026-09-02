@@ -27,7 +27,8 @@ def test_no_requirements_txt():
 def test_env_example_has_i7_keys():
     text = (ROOT / ".env.example").read_text(encoding="utf-8")
     assert "DATABASE_URL=" in text
-    assert "JOBDIGEST_ENABLE=" in text
+    assert "JOBDIGEST_ENABLE=" not in text
+    assert "JOBDIGEST_CRON=" in text
     assert "TELEGRAM_BOT_TOKEN=" in text
     assert "TELEGRAM_CHAT_ID=" in text
 

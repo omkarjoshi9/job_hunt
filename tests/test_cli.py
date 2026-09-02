@@ -52,7 +52,7 @@ def test_help_lists_all_commands():
 
 
 def test_collect_no_longer_stub(monkeypatch, capsys, tmp_path):
-    monkeypatch.setenv("JOBDIGEST_ENABLE", "")
+    monkeypatch.setattr("jobdigest.collect.load_companies", lambda: {"companies": []})
     db = tmp_path / "jobs.db"
     code = main(["collect", "--db", str(db)])
     assert code == 0

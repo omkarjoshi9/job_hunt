@@ -30,13 +30,12 @@ def test_collect_workflow():
     assert "secrets.DATABASE_URL" in text
     assert "secrets.TELEGRAM_BOT_TOKEN" in text
     assert "secrets.TELEGRAM_CHAT_ID" in text
-    assert "secrets.JOBDIGEST_ENABLE" in text
+    assert "JOBDIGEST_ENABLE" not in text
     assert "secrets.PROFILE_YAML" in text
     assert "secrets.COMPANIES_YAML" in text
     assert "secrets.MODELS_YAML" in text
     assert "secrets.PORTALS_YAML" in text
     assert "secrets.FEEDS_YAML" in text
-    assert "vars.JOBDIGEST_ENABLE" not in text
     assert "JOBDIGEST_REQUIRE_TELEGRAM" in text
     assert "git commit" not in text
     assert "jobs.db" not in text
@@ -46,8 +45,12 @@ def test_collect_workflow():
 
 def test_digest_workflow_tz():
     text = (WF / "digest.yml").read_text(encoding="utf-8")
-    assert "30 4 * * *" in text
-    assert "0 4 * * *" not in text.replace("30 4 * * *", "")
+    assert "*/15 * * * *" in text
+    assert "secrets.JOBDIGEST_CRON" in text
+    assert "python3 -m jobdigest.cron" in text
+    assert "needs.gate.outputs.due" in text
+    assert "30 4 * * *" not in text
+    assert "0 4 * * *" not in text
     assert "workflow_dispatch" in text
     assert "jobdigest-digest" in text
     assert "cancel-in-progress: false" in text

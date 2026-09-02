@@ -29,6 +29,31 @@ portals:
     enabled: false
     parser: generic_cards
     notes: "Product UI; keep false."
+  - name: puneops
+    url: https://www.puneops.co.in/
+    enabled: false
+    parser: generic_cards
+    notes: "canvas: niche-boards #1 India DevOps/SRE/Cloud. Enable locally after HTTP 200 HTML."
+  - name: aikyam-jobs
+    url: https://aikyamjobs.org/
+    enabled: false
+    parser: generic_cards
+    notes: "canvas: master rank 17 India-first impact/AI. Enable locally after HTTP 200 HTML."
+  - name: cybertimes-jobs
+    url: https://cyber-times.in/jobs
+    enabled: false
+    parser: generic_cards
+    notes: "canvas: master rank 15 India AppSec/SOC/VAPT. Enable locally after HTTP 200 HTML."
+  - name: remotist
+    url: https://remotist.in/
+    enabled: false
+    parser: generic_cards
+    notes: "canvas: master rank 18 remote jobs hiring in India. Enable locally after HTTP 200 HTML."
+  - name: agentic-engineering-india
+    url: https://agentic-engineering-jobs.com/jobs/india
+    enabled: false
+    parser: generic_cards
+    notes: "canvas: master rank 1; /jobs/india only (homepage is US-heavy). Enable after HTTP 200 HTML."
   - name: otta
     url: https://otta.com/jobs
     enabled: false
@@ -43,7 +68,7 @@ portals:
     url: https://llmhire.com
     enabled: false
     parser: kill
-    notes: "Kill-list: not a primary HTML board."
+    notes: "Kill-list: ATS aggregator of Greenhouse/Ashby you already poll. Not a primary HTML board."
   - name: discord
     url: https://discord.com
     enabled: false
@@ -54,3 +79,43 @@ portals:
     enabled: false
     parser: kill
     notes: "Kill-list: login/ToS. Do not scrape as primary."
+  - name: internshala
+    url: https://internshala.com/
+    enabled: false
+    parser: kill
+    notes: "Kill-list: login marketplace. Profile yourself; do not scrape."
+  - name: cutshort
+    url: https://cutshort.io/
+    enabled: false
+    parser: kill
+    notes: "Kill-list: match marketplace. Architecture canvas: keep a profile, do not scrape."
+  - name: instahyre
+    url: https://www.instahyre.com/
+    enabled: false
+    parser: kill
+    notes: "Kill-list: match marketplace. Profile yourself; do not scrape."
+  - name: hirist
+    url: https://www.hirist.tech/
+    enabled: false
+    parser: kill
+    notes: "Kill-list: match marketplace. Profile yourself; do not scrape."
+  - name: wellfound
+    url: https://wellfound.com/location/india
+    enabled: false
+    parser: kill
+    notes: "Kill-list: login marketplace. Use /location/india in a browser; do not scrape."
+  - name: weekday
+    url: https://www.weekday.works/
+    enabled: false
+    parser: kill
+    notes: "Kill-list: recruiter marketplace; /jobs 404. Keep a profile."
+  - name: perik
+    url: https://perik.ai/
+    enabled: false
+    parser: kill
+    notes: "Kill-list: ATS freshness aggregator. Poll employer boards instead."
+  - name: ai-jobs-net
+    url: https://ai-jobs.net
+    enabled: false
+    parser: kill
+    notes: "Kill-list: 49k global dump. Architecture canvas: not a worker."

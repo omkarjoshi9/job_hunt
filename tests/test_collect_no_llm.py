@@ -9,6 +9,7 @@ def test_collect_source_has_no_openrouter():
     assert "openai" not in text
     assert "scrapling" not in text
     assert "gspread" not in text
+    assert "jobdigest_enable" not in text
 
 
 def test_score_digest_source_has_no_gspread():

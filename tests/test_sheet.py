@@ -214,7 +214,7 @@ def test_missing_creds_exits_1(monkeypatch, tmp_path, capsys):
 
 
 def test_collect_disconnected_from_sheets(monkeypatch, tmp_path):
-    monkeypatch.setenv("JOBDIGEST_ENABLE", "")
+    monkeypatch.setattr("jobdigest.collect.load_companies", lambda: {"companies": []})
     db = tmp_path / "jobs.db"
     code = collect_run(db_path=db, sleep=lambda _: None)
     assert code == 0

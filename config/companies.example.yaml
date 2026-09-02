@@ -11,6 +11,12 @@ companies:
     token: huggingface
     enabled: false
     notes: "US/EMEA; never enable; Workable tests use fixtures"
+  - id: elevation-capital
+    name: Elevation Capital
+    ats: workable
+    token: elevation-capital-3
+    enabled: false
+    notes: "canvas: master; India portfolio Workable; enable locally after probe"
   - id: peakxv
     name: Peak XV
     ats: getro
@@ -23,9 +29,21 @@ companies:
     token: surge
     enabled: false
     notes: "unimplemented in I2; adapter must not return empty_board"
+  - id: nexusvp
+    name: Nexus VP
+    ats: getro
+    token: nexusvp
+    enabled: false
+    notes: "unimplemented; canvas: jobs.nexusvp.com; adapter must not return empty_board"
   - id: flipkart
     name: Flipkart
     ats: workday
     token: flipkart
     enabled: false
     notes: "unimplemented in I2; adapter must not return empty_board"
+  - id: fractal
+    name: Fractal
+    ats: workday
+    token: fractal
+    enabled: false
+    notes: "unimplemented; canvas: India-office; Workday not public JSON"
