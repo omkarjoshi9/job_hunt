@@ -15,3 +15,4 @@ fi
 
 "$PY" -m jobdigest collect --ats-only --db data/jobs.db
 "$PY" -m jobdigest digest --db data/jobs.db
+"$PY" -m jobdigest sheet-sync --db data/jobs.db

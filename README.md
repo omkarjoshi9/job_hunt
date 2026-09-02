@@ -111,7 +111,7 @@ pip install -e ".[dev]"
 chmod +x start.sh && ./start.sh
 ```
 
-Git Bash on Windows. One-shot `collect --ats-only` then `digest` against `data/jobs.db`.
+Git Bash on Windows. One-shot `collect --ats-only`, then `digest`, then `sheet-sync` against `data/jobs.db`.
 
 ```
 python -m jobdigest collect|score|digest|sheet-append|sheet-sync

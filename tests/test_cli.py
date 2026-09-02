@@ -6,6 +6,9 @@ class _FakeSheet:
     def __init__(self):
         self.rows = []
         self.appends = 0
+        self.formats = []
+        self.validations = []
+        self.frozen_rows = None
 
     def get_all_values(self):
         return [list(r) for r in self.rows]
@@ -29,6 +32,16 @@ class _FakeSheet:
             self.rows.append(row)
         else:
             self.rows[0] = row
+
+    def format(self, ranges, format):
+        self.formats.append((ranges, dict(format)))
+
+    def freeze(self, rows=None, cols=None):
+        _ = cols
+        self.frozen_rows = rows
+
+    def add_validation(self, range, condition_type, values, **kwargs):
+        self.validations.append((range, condition_type, list(values), dict(kwargs)))
 
 
 def test_help_lists_all_commands():

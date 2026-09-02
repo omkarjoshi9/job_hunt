@@ -4,13 +4,29 @@ from jobdigest.cli import build_parser, main
 from jobdigest.collect import run as collect_run
 from jobdigest.config import load_models, load_profile
 from jobdigest.db import connect, guest_rows, upsert_application, upsert_job, upsert_score
-from jobdigest.sheet import CAMPUS_OFF, HEADERS, OLD_HEADERS, run, sync
+from jobdigest.sheet import (
+    APPLIED_CHOICES,
+    APPLIED_RANGE,
+    CAMPUS_CHOICES,
+    CAMPUS_OFF,
+    CAMPUS_RANGE,
+    HEADER_FORMAT,
+    HEADER_RANGE,
+    HEADERS,
+    OLD_HEADERS,
+    ensure_headers,
+    run,
+    sync,
+)
 
 
 class FakeSheet:
     def __init__(self, rows=None):
         self.rows = [list(r) for r in (rows or [])]
         self.appends = 0
+        self.formats = []
+        self.validations = []
+        self.frozen_rows = None
 
     def get_all_values(self):
         return [list(r) for r in self.rows]
@@ -34,6 +50,16 @@ class FakeSheet:
             self.rows.append(row)
         else:
             self.rows[0] = row
+
+    def format(self, ranges, format):
+        self.formats.append((ranges, dict(format)))
+
+    def freeze(self, rows=None, cols=None):
+        _ = cols
+        self.frozen_rows = rows
+
+    def add_validation(self, range, condition_type, values, **kwargs):
+        self.validations.append((range, condition_type, list(values), dict(kwargs)))
 
 
 def _data_rows(sheet: FakeSheet) -> list[list[str]]:
@@ -373,3 +399,63 @@ def test_sheet_sync_migrates_old_headers(tmp_path, capsys):
     assert keep[7] == "oa"
     assert keep[8] == "note"
     assert any(row[3] == "https://old.example/intern" for row in sheet.rows[1:])
+
+
+def _assert_layout(sheet: FakeSheet) -> None:
+    assert sheet.frozen_rows == 1
+    assert sheet.formats == [(HEADER_RANGE, HEADER_FORMAT)]
+    campus, applied = sheet.validations
+    assert campus[0] == CAMPUS_RANGE
+    assert campus[2] == list(CAMPUS_CHOICES)
+    assert campus[3]["showCustomUi"] is True
+    assert campus[3]["strict"] is False
+    assert applied[0] == APPLIED_RANGE
+    assert applied[2] == list(APPLIED_CHOICES)
+    assert applied[3]["showCustomUi"] is True
+    assert applied[3]["strict"] is False
+
+
+def test_ensure_headers_styles_and_dropdowns_without_rewriting_rows():
+    existing = [
+        HEADERS,
+        [
+            "2026-09-02",
+            "Stripe",
+            "Software Engineer Intern",
+            "https://stripe.com/jobs/1",
+            "stripe",
+            CAMPUS_OFF,
+            "",
+            "",
+            "",
+        ],
+    ]
+    sheet = FakeSheet(rows=existing)
+    ensure_headers(sheet)
+    assert sheet.rows == existing
+    _assert_layout(sheet)
+
+
+def test_sheet_sync_applies_layout_when_headers_already_match(tmp_path, capsys):
+    db = tmp_path / "jobs.db"
+    url = "https://layout.example/intern"
+    sheet = FakeSheet(
+        rows=[
+            HEADERS,
+            [
+                "2026-01-01",
+                "Acme",
+                "Intern",
+                url,
+                "greenhouse",
+                CAMPUS_OFF,
+                "",
+                "",
+                "",
+            ],
+        ]
+    )
+    assert sync(db_path=db, worksheet=sheet) == 0
+    _ = capsys.readouterr()
+    assert sheet.appends == 0
+    _assert_layout(sheet)

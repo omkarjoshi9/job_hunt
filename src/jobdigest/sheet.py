@@ -31,7 +31,21 @@ HEADERS = [
     "Notes",
 ]
 CAMPUS_OFF = "offcampus"
+CAMPUS_CHOICES = ("offcampus", "oncampus")
+APPLIED_CHOICES = ("yes", "no")
+HEADER_RANGE = "A1:I1"
+CAMPUS_RANGE = "F2:F5000"
+APPLIED_RANGE = "G2:G5000"
 LINK_COL = 3
+HEADER_FORMAT = {
+    "backgroundColor": {"red": 0.15, "green": 0.15, "blue": 0.18},
+    "horizontalAlignment": "CENTER",
+    "verticalAlignment": "MIDDLE",
+    "textFormat": {
+        "bold": True,
+        "foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0},
+    },
+}
 
 
 def require_sheet() -> bool:
@@ -90,6 +104,44 @@ def migrate_if_needed(values: list[list[str]]) -> tuple[list[list[str]], bool]:
     return out, True
 
 
+def _call_sheet(worksheet: Any, name: str, *args: Any, **kwargs: Any) -> None:
+    method = getattr(worksheet, name, None)
+    if not callable(method):
+        return
+    try:
+        method(*args, **kwargs)
+    except Exception as exc:
+        print(f"sheet-{name} skip {exc}", file=sys.stderr)
+
+
+def apply_sheet_layout(worksheet: Any) -> None:
+    _call_sheet(worksheet, "format", HEADER_RANGE, HEADER_FORMAT)
+    _call_sheet(worksheet, "freeze", rows=1)
+    try:
+        from gspread.utils import ValidationConditionType
+    except Exception as exc:
+        print(f"sheet-validation skip {exc}", file=sys.stderr)
+        return
+    _call_sheet(
+        worksheet,
+        "add_validation",
+        CAMPUS_RANGE,
+        ValidationConditionType.one_of_list,
+        list(CAMPUS_CHOICES),
+        showCustomUi=True,
+        strict=False,
+    )
+    _call_sheet(
+        worksheet,
+        "add_validation",
+        APPLIED_RANGE,
+        ValidationConditionType.one_of_list,
+        list(APPLIED_CHOICES),
+        showCustomUi=True,
+        strict=False,
+    )
+
+
 def _replace_values(worksheet: Any, rows: list[list[str]]) -> None:
     updater = getattr(worksheet, "update", None)
     if not callable(updater):
@@ -107,21 +159,21 @@ def ensure_headers(worksheet: Any) -> None:
         updater = getattr(worksheet, "update", None)
         if callable(updater):
             worksheet.update("A1:I1", [HEADERS])
-            return
-        worksheet.append_row(HEADERS, value_input_option="USER_ENTERED")
+        else:
+            worksheet.append_row(HEADERS, value_input_option="USER_ENTERED")
+        apply_sheet_layout(worksheet)
         return
     first = _header_row(values)
-    if first[: len(HEADERS)] == HEADERS:
-        return
-    if changed:
-        _replace_values(worksheet, migrated)
-        return
-    updater = getattr(worksheet, "update", None)
-    if callable(updater):
-        worksheet.update("A1:I1", [HEADERS])
-        return
-    if not values:
-        worksheet.append_row(HEADERS, value_input_option="USER_ENTERED")
+    if first[: len(HEADERS)] != HEADERS:
+        if changed:
+            _replace_values(worksheet, migrated)
+        else:
+            updater = getattr(worksheet, "update", None)
+            if callable(updater):
+                worksheet.update("A1:I1", [HEADERS])
+            else:
+                worksheet.append_row(HEADERS, value_input_option="USER_ENTERED")
+    apply_sheet_layout(worksheet)
 
 
 def _existing_norms(values: list[list[str]]) -> dict[str, int]:
