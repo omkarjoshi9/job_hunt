@@ -1,0 +1,28 @@
+{
+  "name": "Example Corp",
+  "description": "Widget board",
+  "jobs": [
+    {
+      "shortcode": "INT001",
+      "title": "Software Intern",
+      "city": "Bengaluru",
+      "state": "Karnataka",
+      "country": "India",
+      "url": "https://apply.workable.com/example/j/INT001/",
+      "application_url": "https://apply.workable.com/j/INT001/apply",
+      "employment_type": "Internship",
+      "workplace_type": "on_site",
+      "description": "<p>Build in Bengaluru</p>"
+    },
+    {
+      "shortcode": "STAFF1",
+      "title": "Staff Engineer",
+      "city": "San Francisco",
+      "country": "United States",
+      "url": "https://apply.workable.com/example/j/STAFF1/",
+      "application_url": "https://apply.workable.com/j/STAFF1/apply",
+      "employment_type": "Full-time",
+      "description": "Remote US"
+    }
+  ]
+}

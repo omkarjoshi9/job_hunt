@@ -1,0 +1,27 @@
+{
+  "jobs": [
+    {
+      "id": "ash-1",
+      "title": " Software Engineer Intern",
+      "location": "Bengaluru, India",
+      "isListed": true,
+      "employmentType": "Intern",
+      "workplaceType": "OnSite",
+      "jobUrl": "https://jobs.ashbyhq.com/example/ash-1",
+      "applyUrl": "https://jobs.ashbyhq.com/example/ash-1/application",
+      "descriptionPlain": "Intern in Bengaluru",
+      "secondaryLocations": []
+    },
+    {
+      "id": "ash-2",
+      "title": " Hidden Role",
+      "location": "Remote",
+      "isListed": false,
+      "employmentType": "FullTime",
+      "workplaceType": "Remote",
+      "jobUrl": "https://jobs.ashbyhq.com/example/ash-2",
+      "applyUrl": "https://jobs.ashbyhq.com/example/ash-2/application",
+      "descriptionPlain": "Should be dropped"
+    }
+  ]
+}

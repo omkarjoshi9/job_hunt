@@ -1,0 +1,21 @@
+[
+  {
+    "id": "lev-1",
+    "text": "Backend Intern",
+    "hostedUrl": "https://jobs.lever.co/example/lev-1",
+    "applyUrl": "https://jobs.lever.co/example/lev-1/apply",
+    "categories": {"location": "Bengaluru", "commitment": "Intern", "allLocations": ["India"]},
+    "workplaceType": "hybrid",
+    "descriptionPlain": "Work in Bengaluru",
+    "createdAt": 1700000000000
+  },
+  {
+    "id": "lev-2",
+    "text": "Staff Engineer",
+    "hostedUrl": "https://jobs.lever.co/example/lev-2",
+    "applyUrl": "https://jobs.lever.co/example/lev-2/apply",
+    "categories": {"location": "New York", "commitment": "Full-time"},
+    "workplaceType": "remote",
+    "descriptionPlain": "Remote US"
+  }
+]

@@ -1,0 +1,20 @@
+{
+  "jobs": [
+    {
+      "id": 101,
+      "title": "Software Engineer Intern",
+      "absolute_url": "https://boards.greenhouse.io/example/jobs/101",
+      "location": {"name": "Bengaluru, India"},
+      "content": "&lt;p&gt;Build APIs in Bangalore&lt;/p&gt;",
+      "company_name": "Example Corp"
+    },
+    {
+      "id": 102,
+      "title": "Staff Engineer",
+      "absolute_url": "https://boards.greenhouse.io/example/jobs/102",
+      "location": {"name": "San Francisco, CA"},
+      "content": "Remote US"
+    }
+  ],
+  "meta": {"total": 2}
+}

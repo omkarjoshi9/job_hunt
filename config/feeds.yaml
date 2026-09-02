@@ -1,0 +1,5 @@
+feeds:
+  - name: python-jobs
+    url: https://www.python.org/jobs/feed/rss/
+    enabled: false
+    notes: "feedparser only; enable locally after probe."

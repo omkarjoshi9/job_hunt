@@ -1,0 +1,12 @@
+{
+  "jobs": [
+    {
+      "id": 201,
+      "title": "Intern",
+      "absolute_url": "https://boards.greenhouse.io/example/jobs/201",
+      "location": {"name": "Pune"},
+      "content": "&amp;lt;p&amp;gt;Bengaluru intern&amp;lt;/p&amp;gt;"
+    }
+  ],
+  "meta": {"total": 1}
+}

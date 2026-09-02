@@ -1,0 +1,47 @@
+name: Example
+college: Example College
+degree: B.E.
+batch: 2027
+cgpa: 8.0
+location: Pune
+relocate:
+  - Bengaluru
+work_auth: India
+role_types:
+  - intern
+  - new-grad
+skills:
+  - Python
+  - FastAPI
+  - LangChain
+  - LangGraph
+  - RAG
+  - Docker
+  - AWS
+  - GCP
+  - security
+internships:
+  - Example intern
+india_keywords:
+  - India
+  - Pune
+  - Bengaluru
+  - Bangalore
+  - Hyderabad
+  - Mumbai
+  - Chennai
+  - Noida
+  - Gurugram
+  - Gurgaon
+  - Delhi
+  - NCR
+  - PAN India
+  - Remote India
+title_allow_intern: "intern|internship|apprentice|trainee|campus"
+title_allow_newgrad: "new[- ]?grad|university|graduate|junior|sde\\s*1|software engineer|associate software|software engineer associate|associate sde|fresher|0[-–]1"
+title_reject_regex: "staff|principal|distinguished|fellow|senior|\\bsr\\.?\\b|lead|manager|director|vp|head of"
+reject_remote_us: true
+min_yoe_reject: 3
+timezone: Asia/Kolkata
+digest_hour: 10
+digest_max: 12

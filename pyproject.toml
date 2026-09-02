@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jobdigest"
+version = "0.1.0"
+description = "Daily intern job digest: ATS APIs + scrape to SQLite to Telegram"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Omkar" }]
+dependencies = [
+  "pyyaml>=6.0",
+  "httpx>=0.27",
+  "scrapling==0.4.15",
+  "curl_cffi",
+  "browserforge",
+  "protego",
+  "feedparser",
+  "gspread>=6.1",
+  "psycopg[binary]>=3.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+jobdigest = "jobdigest.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

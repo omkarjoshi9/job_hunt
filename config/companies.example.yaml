@@ -1,0 +1,31 @@
+companies:
+  - id: exampleco
+    name: Example Co
+    ats: greenhouse
+    token: exampleco
+    enabled: false
+    notes: "public stub; copy to companies.yaml and edit locally"
+  - id: huggingface
+    name: Hugging Face
+    ats: workable
+    token: huggingface
+    enabled: false
+    notes: "US/EMEA; never enable; Workable tests use fixtures"
+  - id: peakxv
+    name: Peak XV
+    ats: getro
+    token: peakxv
+    enabled: false
+    notes: "unimplemented in I2; adapter must not return empty_board"
+  - id: surge
+    name: Surge
+    ats: getro
+    token: surge
+    enabled: false
+    notes: "unimplemented in I2; adapter must not return empty_board"
+  - id: flipkart
+    name: Flipkart
+    ats: workday
+    token: flipkart
+    enabled: false
+    notes: "unimplemented in I2; adapter must not return empty_board"

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Python Job Board</title>
+    <link>https://www.python.org/jobs/</link>
+    <item>
+      <title>Software Engineer Intern</title>
+      <link>https://www.python.org/jobs/1</link>
+      <guid>https://www.python.org/jobs/1</guid>
+      <description>Intern role in Bengaluru</description>
+    </item>
+    <item>
+      <title>Data Intern</title>
+      <link>https://www.python.org/jobs/2</link>
+      <guid>python-jobs-2</guid>
+      <description>Intern role in Pune</description>
+    </item>
+  </channel>
+</rss>
