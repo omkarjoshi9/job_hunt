@@ -10,35 +10,44 @@ def _utc(hour: int, minute: int) -> datetime:
     return datetime(2026, 9, 3, hour, minute, tzinfo=timezone.utc)
 
 
-def test_default_cron_is_1030_utc_not_0400():
-    assert DEFAULT_CRON == "30 4 * * *"
+def test_default_cron_is_0930_ist_not_0400():
+    assert DEFAULT_CRON == "30 3 * * *"
     assert DEFAULT_CRON != "0 4 * * *"
+    assert DEFAULT_CRON != "30 4 * * *"
 
 
-def test_schedule_due_at_0430():
-    assert is_due(now=_utc(4, 30), event="schedule", cron="30 4 * * *") is True
+def test_schedule_due_at_0330():
+    assert is_due(now=_utc(3, 30), event="schedule", cron="30 3 * * *") is True
 
 
 def test_schedule_due_when_delayed_inside_slot():
-    assert is_due(now=_utc(4, 41), event="schedule", cron="30 4 * * *") is True
+    assert is_due(now=_utc(3, 41), event="schedule", cron="30 3 * * *") is True
 
 
-def test_schedule_not_due_at_0400():
-    assert is_due(now=_utc(4, 0), event="schedule", cron="30 4 * * *") is False
+def test_schedule_not_due_at_0300():
+    assert is_due(now=_utc(3, 0), event="schedule", cron="30 3 * * *") is False
 
 
 def test_schedule_not_due_next_slot():
-    assert is_due(now=_utc(4, 45), event="schedule", cron="30 4 * * *") is False
+    assert is_due(now=_utc(3, 45), event="schedule", cron="30 3 * * *") is False
 
 
 def test_empty_cron_uses_default():
-    assert is_due(now=_utc(4, 30), event="schedule", cron="") is True
-    assert is_due(now=_utc(4, 0), event="schedule", cron="") is False
+    assert is_due(now=_utc(3, 30), event="schedule", cron="") is True
+    assert is_due(now=_utc(3, 0), event="schedule", cron="") is False
+    assert is_due(now=_utc(4, 30), event="schedule", cron="") is False
+
+
+def test_custom_cron_1030_ist_still_works():
+    assert is_due(now=_utc(4, 30), event="schedule", cron="30 4 * * *") is True
+    assert is_due(now=_utc(4, 41), event="schedule", cron="30 4 * * *") is True
+    assert is_due(now=_utc(4, 0), event="schedule", cron="30 4 * * *") is False
+    assert is_due(now=_utc(4, 45), event="schedule", cron="30 4 * * *") is False
 
 
 def test_dispatch_always_due():
     assert is_due(now=_utc(12, 0), event="workflow_dispatch", cron="30 4 * * *") is True
-    assert is_due(now=_utc(12, 0), event="", cron="30 4 * * *") is True
+    assert is_due(now=_utc(12, 0), event="", cron="30 3 * * *") is True
 
 
 def test_custom_cron():
@@ -55,7 +64,7 @@ def test_main_writes_github_output(tmp_path, monkeypatch, capsys):
     out = tmp_path / "github_output"
     monkeypatch.setenv("GITHUB_OUTPUT", str(out))
     monkeypatch.setenv("GITHUB_EVENT_NAME", "workflow_dispatch")
-    monkeypatch.setenv("JOBDIGEST_CRON", "30 4 * * *")
+    monkeypatch.setenv("JOBDIGEST_CRON", "30 3 * * *")
     assert main() == 0
     text = out.read_text(encoding="utf-8")
     assert "due=true" in text

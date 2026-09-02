@@ -39,14 +39,15 @@ def test_readme_drops_hermes_documents_hosted():
     text = (ROOT / "README.md").read_text(encoding="utf-8").lower()
     assert "hermes" not in text
     assert "openwa" not in text
-    assert "30 4 * * *" in text
+    assert "30 3 * * *" in text
+    assert "30 4 * * *" not in text
     assert "botfather" in text
     assert "neon" in text
     assert "--ats-only" in text
-    assert "collect-browser" in text
+    assert "pipeline" in text
+    assert "collect-browser" not in text
     assert "--portal-fetch" in text
     assert "playwright install chromium" in text
-    assert "0 3 * * *" in text
     assert "feedparser" in text
     assert "wheels" in text
     assert "http-only fetching" not in text

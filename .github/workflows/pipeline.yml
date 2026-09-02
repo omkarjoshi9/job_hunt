@@ -1,10 +1,10 @@
-name: digest
+name: pipeline
 on:
   schedule:
     - cron: "*/15 * * * *"
   workflow_dispatch:
 concurrency:
-  group: jobdigest-digest
+  group: jobdigest-pipeline
   cancel-in-progress: false
 jobs:
   gate:
@@ -19,16 +19,27 @@ jobs:
           PYTHONPATH: src
           JOBDIGEST_CRON: ${{ secrets.JOBDIGEST_CRON }}
         run: python3 -m jobdigest.cron
-  digest:
+  pipeline:
     needs: gate
     if: needs.gate.outputs.due == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - run: pip install -e .
+      - uses: actions/cache@v4
+        id: playwright-cache
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ runner.os }}-1.62.0
+      - name: Install Chromium system deps
+        run: python -m playwright install-deps chromium
+      - name: Install Chromium
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: python -m playwright install chromium
       - name: Write private config
         env:
           PROFILE_YAML: ${{ secrets.PROFILE_YAML }}
@@ -59,6 +70,12 @@ jobs:
           for key, rel in files.items():
               Path(rel).write_text(os.environ[key], encoding="utf-8")
           PY
+      - run: python -m jobdigest collect
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          JOBDIGEST_REQUIRE_TELEGRAM: "1"
       - run: python -m jobdigest digest
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}

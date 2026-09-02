@@ -11,7 +11,7 @@
 
 Daily intern and new-grad job digest for India-based roles.
 
-The pipeline fetches public ATS boards, applies Python hard filters, scores remaining jobs with OpenRouter, and sends a Telegram digest at 10:00 IST. There is no auto-apply.
+The pipeline fetches public ATS boards, applies Python hard filters, scores remaining jobs with OpenRouter, and sends a Telegram digest at 9:00 IST. There is no auto-apply.
 
 GitHub Actions schedules the work. Python runs collect, score, and digest. Telegram Bot API delivers the message. Hosted job state lives in Neon Postgres because Actions runners do not persist disk.
 
@@ -22,7 +22,7 @@ Hunt config under `config/` is gitignored (`*.example.yaml` stubs stay in git). 
 - No auto-apply.
 - Real hunt YAML is local or stored in GitHub secrets. Only `config/*.example.yaml` is public.
 - LinkedIn, Discord, Otta, Hugging Face jobs HTML, and LLMHire are on a kill list and stay disabled.
-- Portals use Scrapling (`scrapling[fetchers]` plus pinned Playwright/Patchright **wheels**). Chromium is optional locally and required only on `collect-browser`. Digest and pytest never launch a browser. RSS stays `httpx` + `feedparser` (not Scrapling).
+- Portals use Scrapling (`scrapling[fetchers]` plus pinned Playwright/Patchright **wheels**). Chromium is optional locally and required on the hosted `pipeline` workflow. Pytest never launches a browser. RSS stays `httpx` + `feedparser` (not Scrapling).
 - Collect does not call an LLM. Scoring runs later.
 - An empty digest after a successful collect is silent. `COLLECT FAILED` and `SCORE FAILED` are sent as Telegram alerts.
 
@@ -32,8 +32,7 @@ Hunt config under `config/` is gitignored (`*.example.yaml` stubs stay in git). 
 companies.yaml (enabled: true)
         │
         ▼
-   collect  ──  every 6h UTC: ATS + RSS + fetch=http portals
-        │       (collect-browser daily: fetch=dynamic|stealth + Chromium)
+   collect  ──  once a day on GitHub Actions (ATS + RSS + all portal fetch modes)
         │       Greenhouse / Lever / Ashby / Workable
         ▼
    hard_filter (title, years of experience, US-remote, India)
@@ -42,7 +41,7 @@ companies.yaml (enabled: true)
    Neon or SQLite  (jobs, scores, runs, applications)
         │
         ▼
-   digest  ──  10:00 IST (default JOBDIGEST_CRON = 30 4 * * *)
+   digest  ──  9:00 IST (default JOBDIGEST_CRON = 30 3 * * *)
         │       score (OpenRouter JSON)
         │       summarize (Python bullets if the summarizer fails)
         ├──────────► Telegram (plain text, split ~3800 characters)
@@ -55,21 +54,17 @@ Duplicate apply URLs collapse to one row (UTM and click IDs stripped). The same 
 
 | Workflow | When | Command |
 |---|---|---|
-| [`.github/workflows/collect.yml`](.github/workflows/collect.yml) | `0 */6 * * *` UTC + `workflow_dispatch` | `python -m jobdigest collect --portal-fetch http` |
-| [`.github/workflows/collect-browser.yml`](.github/workflows/collect-browser.yml) | `0 3 * * *` UTC + `workflow_dispatch` | `python -m jobdigest collect --skip-ats --skip-feeds --portal-fetch dynamic --portal-fetch stealth` |
-| [`.github/workflows/digest.yml`](.github/workflows/digest.yml) | `*/15 * * * *` with a cron gate + `workflow_dispatch` | `python -m jobdigest digest` then `sheet-sync` |
+| [`.github/workflows/pipeline.yml`](.github/workflows/pipeline.yml) | `*/15 * * * *` with a cron gate + `workflow_dispatch` | `python -m jobdigest collect` then `digest` then `sheet-sync` |
 | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) | push / pull_request | `pytest` only (wheels OK; no Chromium) |
 
 | UTC cron | IST | Role |
 |---|---|---|
-| `30 4 * * *` (default `JOBDIGEST_CRON`) | 10:00 | digest |
-| `0 */6 * * *` | — | collect (ATS + RSS + HTTP portals) |
-| `0 3 * * *` | 08:30 | collect-browser (dynamic/stealth portals) |
+| `30 3 * * *` (default `JOBDIGEST_CRON`) | 09:00 | full pipeline |
 | `0 4 * * *` | 09:30 | do not use |
 
-The digest workflow ticks every 15 minutes and no-ops unless `JOBDIGEST_CRON` matches that UTC slot. An empty secret keeps `30 4 * * *`. Manual **Run workflow** always runs. Collect stays `0 */6 * * *`. `collect-browser` installs/caches Chromium and does not run digest or sheet-sync.
+The pipeline workflow ticks every 15 minutes and no-ops unless `JOBDIGEST_CRON` matches that UTC slot. An empty secret keeps `30 3 * * *`. Manual **Run workflow** always runs collect, digest, and sheet-sync. Hosted collect installs/caches Chromium so `fetch: dynamic` and `fetch: stealth` portals can run in the same job as ATS, RSS, and HTTP portals.
 
-`--ats-only` still skips portals and RSS (local/debug). Hosted 6h collect is `--portal-fetch http` so ATS, RSS (`httpx`/`feedparser`), and HTTP portals run without launching Chrome. Dynamic/stealth rows run only on `collect-browser`. Hosted state is **Neon** (`DATABASE_URL`). Local pytest and `--db` use SQLite. Playwright wheels are required so `FetcherSession` can import; Chromium binaries are not. GitHub datacenter IPs can still lose to Cloudflare; `solve_cloudflare: true` is per-row and not a guarantee.
+`--ats-only` still skips portals and RSS (local/debug). Hosted collect has no `--portal-fetch` filter. Hosted state is **Neon** (`DATABASE_URL`). Local pytest and `--db` use SQLite. Playwright wheels are required so `FetcherSession` can import; Chromium binaries are required only on the hosted pipeline (and locally if you enable dynamic/stealth). GitHub datacenter IPs can still lose to Cloudflare; `solve_cloudflare: true` is per-row and not a guarantee.
 
 Telegram uses Bot API `sendMessage` with plain text (no HTML parse mode). Cron workflows set `JOBDIGEST_REQUIRE_TELEGRAM=1` so a required send fails if the token or chat id is missing.
 
@@ -123,7 +118,7 @@ If `DATABASE_URL` is set and you omit `--db`, collect and digest use Neon. `--db
 
 ## Hosted setup (GitHub Actions)
 
-Actions checks out the public example YAML, then writes private config from secrets onto the runner. A company, portal, or feed is fetched only when that row’s `enabled:` is true. All-false YAML is a successful no-op, not a collect failure. Hosted 6h collect uses `--portal-fetch http`. Dynamic and stealth portals run on `collect-browser` only.
+Actions checks out the public example YAML, then writes private config from secrets onto the runner. A company, portal, or feed is fetched only when that row’s `enabled:` is true. All-false YAML is a successful no-op, not a collect failure. The hosted pipeline runs ATS, RSS, and every enabled portal fetch mode in one collect.
 
 Paste the full contents of each local `config/*.yaml` file into the matching `*_YAML` secret. Companies you want collected must have `enabled: true` in `COMPANIES_YAML`.
 
@@ -135,7 +130,7 @@ Paste the full contents of each local `config/*.yaml` file into the matching `*_
 | `DATABASE_URL` | Neon connection string |
 | `TELEGRAM_BOT_TOKEN` | From [@BotFather](https://t.me/BotFather) |
 | `TELEGRAM_CHAT_ID` | User or group id (not committed) |
-| `JOBDIGEST_CRON` | Five-field UTC cron; empty = `30 4 * * *` |
+| `JOBDIGEST_CRON` | Five-field UTC cron; empty = `30 3 * * *` |
 | `PROFILE_YAML` | Full `config/profile.yaml` |
 | `COMPANIES_YAML` | Full `config/companies.yaml` |
 | `MODELS_YAML` | Full `config/models.yaml` |
@@ -155,11 +150,11 @@ Do not put keys in workflow YAML or git. Do not commit `.env`, `config/*.yaml` (
 
 Create a Postgres project and copy the connection string into `DATABASE_URL`. An empty `DATABASE_URL` keeps SQLite (`DATABASE_PATH` / `--db`). Schema and identity match SQLite: `apply_url_norm` UNIQUE, partial unique `(source, external_id)` when id is set, applications unique on `apply_url_norm`.
 
-`workflow_dispatch` on digest sends a real Telegram message when secrets exist (manual smoke test). Default `pytest` is offline SQLite only.
+`workflow_dispatch` on the pipeline sends a real Telegram message when secrets exist (manual smoke test). Default `pytest` is offline SQLite only.
 
 ## Google Sheet
 
-Hosted digest runs `python -m jobdigest sheet-sync` after Telegram. It appends new offcampus guest jobs (the same relevant scored jobs as the digest, up to `digest_max` new URLs). If a link is already on the sheet, that row is left unchanged, including Applied, Status, Campus, and Notes. Collect never writes the sheet.
+Hosted pipeline runs `python -m jobdigest sheet-sync` after Telegram. It appends new offcampus guest jobs (the same relevant scored jobs as the digest, up to `digest_max` new URLs). If a link is already on the sheet, that row is left unchanged, including Applied, Status, Campus, and Notes. Collect never writes the sheet.
 
 Columns: Date, Company, Role, Link, Source, **Campus**, **Applied**, Status, Notes.
 
@@ -170,7 +165,7 @@ Columns: Date, Company, Role, Link, Source, **Campus**, **Applied**, Status, Not
 
 Locally, `GOOGLE_SERVICE_ACCOUNT_JSON` is a gitignored JSON path. On Actions, the secret is the JSON file contents; the workflow writes a temp file. Share the spreadsheet with the service account `client_email` as Editor. Freeze row 1.
 
-Missing Google credentials fail **sheet-append** / **sheet-sync** only. Cron digest sets `JOBDIGEST_REQUIRE_SHEET=1`.
+Missing Google credentials fail **sheet-append** / **sheet-sync** only. The hosted pipeline sets `JOBDIGEST_REQUIRE_SHEET=1`.
 
 ## Score and digest
 

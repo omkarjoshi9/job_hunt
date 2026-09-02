@@ -25,7 +25,7 @@ portals:
     enabled: false
     parser: generic_cards
     fetch: dynamic
-    notes: "SPA; keep false. Needs Chromium (collect-browser or local playwright install)."
+    notes: "SPA; keep false. Needs Chromium (hosted pipeline or local playwright install)."
   - name: prepnplaced-apprentice
     url: https://www.prepnplaced.com/apprenticeships
     enabled: false

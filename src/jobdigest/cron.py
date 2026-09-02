@@ -4,7 +4,7 @@ import os
 import sys
 from datetime import datetime, timedelta, timezone
 
-DEFAULT_CRON = "30 4 * * *"
+DEFAULT_CRON = "30 3 * * *"
 TICK_MINUTES = 15
 
 
