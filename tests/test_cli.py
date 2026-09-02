@@ -49,10 +49,16 @@ def test_help_lists_all_commands():
     text = parser.format_help()
     for name in ("collect", "score", "digest", "sheet-append", "sheet-sync"):
         assert name in text
+    collect = parser.parse_args(["collect", "--skip-ats", "--skip-feeds", "--portal-fetch", "http"])
+    assert collect.skip_ats is True
+    assert collect.skip_feeds is True
+    assert collect.portal_fetch == ["http"]
 
 
 def test_collect_no_longer_stub(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr("jobdigest.collect.load_companies", lambda: {"companies": []})
+    monkeypatch.setattr("jobdigest.collect.load_portals", lambda: {"portals": []})
+    monkeypatch.setattr("jobdigest.collect.load_feeds", lambda: {"feeds": []})
     db = tmp_path / "jobs.db"
     code = main(["collect", "--db", str(db)])
     assert code == 0

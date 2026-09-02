@@ -16,6 +16,8 @@ def test_ci_stays_pytest_only():
     assert "FEEDS_YAML" not in text
     assert "GOOGLE_SHEET" not in text
     assert "sheet-sync" not in text
+    assert "playwright install" not in text
+    assert "chromium" not in text.lower()
 
 
 def test_collect_workflow():
@@ -24,7 +26,9 @@ def test_collect_workflow():
     assert "workflow_dispatch" in text
     assert "jobdigest-collect" in text
     assert "cancel-in-progress: false" in text
-    assert "--ats-only" in text
+    assert "--portal-fetch http" in text
+    assert "--ats-only" not in text
+    assert "playwright install" not in text
     assert "python -m jobdigest collect" in text
     assert "python-version: \"3.12\"" in text or "python-version: '3.12'" in text
     assert "secrets.DATABASE_URL" in text
@@ -41,6 +45,33 @@ def test_collect_workflow():
     assert "jobs.db" not in text
     assert "sk-or-" not in text
     assert "sheet-sync" not in text
+
+
+def test_collect_browser_workflow():
+    text = (WF / "collect-browser.yml").read_text(encoding="utf-8")
+    assert "0 3 * * *" in text
+    assert "workflow_dispatch" in text
+    assert "jobdigest-collect-browser" in text
+    assert "cancel-in-progress: false" in text
+    assert "timeout-minutes: 40" in text
+    assert "~/.cache/ms-playwright" in text
+    assert "playwright install-deps chromium" in text
+    assert "playwright install chromium" in text
+    assert "--skip-ats" in text
+    assert "--skip-feeds" in text
+    assert "--portal-fetch dynamic" in text
+    assert "--portal-fetch stealth" in text
+    assert "python -m jobdigest collect" in text
+    assert "python -m jobdigest digest" not in text
+    assert "sheet-sync" not in text
+    assert "sk-or-" not in text
+    assert "secrets.DATABASE_URL" in text
+    assert "secrets.TELEGRAM_BOT_TOKEN" in text
+    assert "JOBDIGEST_REQUIRE_TELEGRAM" in text
+    assert "secrets.PORTALS_YAML" in text
+    assert "python-version: \"3.12\"" in text or "python-version: '3.12'" in text
+    assert "git commit" not in text
+    assert "jobs.db" not in text
 
 
 def test_digest_workflow_tz():
@@ -69,3 +100,12 @@ def test_digest_workflow_tz():
     assert "JOBDIGEST_REQUIRE_SHEET" in text
     assert "git commit" not in text
     assert "--ats-only" not in text
+    assert "playwright install" not in text
+
+
+def test_start_sh_uses_http_portals():
+    text = (ROOT / "start.sh").read_text(encoding="utf-8")
+    assert "--portal-fetch http" in text
+    assert "--ats-only" not in text
+    assert "digest" in text
+    assert "sheet-sync" in text

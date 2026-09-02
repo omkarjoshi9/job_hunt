@@ -45,7 +45,7 @@ jobs:
           for key, rel in files.items():
               Path(rel).write_text(os.environ[key], encoding="utf-8")
           PY
-      - run: python -m jobdigest collect --ats-only
+      - run: python -m jobdigest collect --portal-fetch http
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}

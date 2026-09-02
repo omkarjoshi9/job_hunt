@@ -3,6 +3,7 @@ portals:
     url: https://fossunited.org/jobs
     enabled: false
     parser: foss_united
+    fetch: http
     notes: "Enable locally after HTTP 200 HTML."
   - name: null-jobs
     url: https://jobs.null.community/
@@ -23,7 +24,8 @@ portals:
     url: https://huntyourtribe.com/jobs/startup-internships-in-india
     enabled: false
     parser: generic_cards
-    notes: "SPA; keep false."
+    fetch: dynamic
+    notes: "SPA; keep false. Needs Chromium (collect-browser or local playwright install)."
   - name: prepnplaced-apprentice
     url: https://www.prepnplaced.com/apprenticeships
     enabled: false

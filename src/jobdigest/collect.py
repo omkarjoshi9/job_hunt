@@ -164,6 +164,10 @@ def run(
     sleep: Callable[[float], None] | None = None,
     fetch_fn: FetchFn | None = None,
     ats_only: bool = False,
+    skip_ats: bool = False,
+    skip_portals: bool = False,
+    skip_feeds: bool = False,
+    portal_fetch: tuple[str, ...] | None = None,
     portal_run_fn: Callable[..., Any] | None = None,
     feed_run_fn: Callable[..., Any] | None = None,
     telegram_http_post: TelegramHttpPost | None = None,
@@ -174,6 +178,9 @@ def run(
         sleep = time.sleep
     if fetch_fn is None:
         fetch_fn = _default_fetch
+    if ats_only:
+        skip_portals = True
+        skip_feeds = True
 
     profile = load_profile()
     payload = load_companies()
@@ -184,8 +191,13 @@ def run(
         1 for raw in rows if isinstance(raw, dict) and bool(raw.get("enabled"))
     )
     log.info(
-        "collect start ats_only=%s yaml_enabled=%s",
+        "collect start ats_only=%s skip_ats=%s skip_portals=%s skip_feeds=%s "
+        "portal_fetch=%s yaml_enabled=%s",
         ats_only,
+        skip_ats,
+        skip_portals,
+        skip_feeds,
+        portal_fetch,
         yaml_enabled,
     )
 
@@ -205,11 +217,12 @@ def run(
     error_units = 0
     status = "ok"
     error_msg: str | None = None
-    session = None
+    bundle = None
     portals_mod = None
 
     try:
-        for raw in rows:
+        company_rows = [] if skip_ats else rows
+        for raw in company_rows:
             if not isinstance(raw, dict):
                 continue
             company = _row_company(raw)
@@ -293,30 +306,42 @@ def run(
                     detail=detail,
                 )
 
-        if not ats_only:
+        if not skip_portals or not skip_feeds:
             from jobdigest import feeds as feeds_mod
             from jobdigest import portals as portals_pkg
 
             portals_mod = portals_pkg
-            portal_rows = [
-                row
-                for row in _dict_rows(load_portals(), "portals")
-                if bool(row.get("enabled"))
-            ]
-            feed_rows = [
-                row
-                for row in _dict_rows(load_feeds(), "feeds")
-                if bool(row.get("enabled"))
-            ]
+            portal_rows = []
+            if not skip_portals:
+                portal_rows = [
+                    row
+                    for row in _dict_rows(load_portals(), "portals")
+                    if bool(row.get("enabled"))
+                ]
+                if portal_fetch:
+                    allowed = frozenset(portal_fetch)
+                    portal_rows = [
+                        row
+                        for row in portal_rows
+                        if portals_pkg.portal_fetch_mode(row) in allowed
+                    ]
+            feed_rows = []
+            if not skip_feeds:
+                feed_rows = [
+                    row
+                    for row in _dict_rows(load_feeds(), "feeds")
+                    if bool(row.get("enabled"))
+                ]
             log.info("portals enabled=%s feeds enabled=%s", len(portal_rows), len(feed_rows))
             last_host: dict = {}
             robots_cache: dict[str, str] = {}
-            session_error: str | None = None
             if portal_run_fn is None and portal_rows:
-                try:
-                    session = portals_pkg.open_session()
-                except Exception as exc:
-                    session_error = str(exc)
+                modes = {
+                    portals_pkg.portal_fetch_mode(row)
+                    for row in portal_rows
+                    if portals_pkg.portal_fetch_mode(row) in portals_pkg.ALLOWED_FETCH
+                }
+                bundle = portals_pkg.open_bundle(modes)
 
             for row in portal_rows:
                 enabled_units += 1
@@ -326,18 +351,10 @@ def run(
                 try:
                     if portal_run_fn is not None:
                         result = portal_run_fn(row)
-                    elif session_error:
-                        result = portals_pkg.PortalResult(
-                            status="error",
-                            error_class="http",
-                            detail=session_error,
-                            name=name,
-                            url=url,
-                        )
                     else:
                         result = portals_pkg.run_one(
                             row,
-                            session=session,
+                            sessions=bundle,
                             sleep=sleep,
                             last_host=last_host,
                             robots_cache=robots_cache,
@@ -419,7 +436,7 @@ def run(
             error_msg = "COLLECT FAILED"
     finally:
         if portals_mod is not None:
-            portals_mod.close_session(session)
+            portals_mod.close_bundle(bundle)
         finish_run(conn, run_id, status, stats, error=error_msg)
         conn.close()
         if own_client and client is not None:

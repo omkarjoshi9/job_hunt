@@ -22,7 +22,7 @@ Hunt config under `config/` is gitignored (`*.example.yaml` stubs stay in git). 
 - No auto-apply.
 - Real hunt YAML is local or stored in GitHub secrets. Only `config/*.example.yaml` is public.
 - LinkedIn, Discord, Otta, Hugging Face jobs HTML, and LLMHire are on a kill list and stay disabled.
-- HTTP-only fetching (`scrapling`, `curl_cffi`, `browserforge`, `protego`). No Playwright, Chromium, `scrapling install`, or stealth fetchers.
+- Portals use Scrapling (`scrapling[fetchers]` plus pinned Playwright/Patchright **wheels**). Chromium is optional locally and required only on `collect-browser`. Digest and pytest never launch a browser. RSS stays `httpx` + `feedparser` (not Scrapling).
 - Collect does not call an LLM. Scoring runs later.
 - An empty digest after a successful collect is silent. `COLLECT FAILED` and `SCORE FAILED` are sent as Telegram alerts.
 
@@ -32,9 +32,9 @@ Hunt config under `config/` is gitignored (`*.example.yaml` stubs stay in git). 
 companies.yaml (enabled: true)
         │
         ▼
-   collect  ──  every 6h UTC, --ats-only on GitHub
+   collect  ──  every 6h UTC: ATS + RSS + fetch=http portals
+        │       (collect-browser daily: fetch=dynamic|stealth + Chromium)
         │       Greenhouse / Lever / Ashby / Workable
-        │       (portals and RSS only when run locally)
         ▼
    hard_filter (title, years of experience, US-remote, India)
         │
@@ -55,19 +55,21 @@ Duplicate apply URLs collapse to one row (UTM and click IDs stripped). The same 
 
 | Workflow | When | Command |
 |---|---|---|
-| [`.github/workflows/collect.yml`](.github/workflows/collect.yml) | `0 */6 * * *` UTC + `workflow_dispatch` | `python -m jobdigest collect --ats-only` |
+| [`.github/workflows/collect.yml`](.github/workflows/collect.yml) | `0 */6 * * *` UTC + `workflow_dispatch` | `python -m jobdigest collect --portal-fetch http` |
+| [`.github/workflows/collect-browser.yml`](.github/workflows/collect-browser.yml) | `0 3 * * *` UTC + `workflow_dispatch` | `python -m jobdigest collect --skip-ats --skip-feeds --portal-fetch dynamic --portal-fetch stealth` |
 | [`.github/workflows/digest.yml`](.github/workflows/digest.yml) | `*/15 * * * *` with a cron gate + `workflow_dispatch` | `python -m jobdigest digest` then `sheet-sync` |
-| [`.github/workflows/ci.yml`](.github/workflows/ci.yml) | push / pull_request | `pytest` only |
+| [`.github/workflows/ci.yml`](.github/workflows/ci.yml) | push / pull_request | `pytest` only (wheels OK; no Chromium) |
 
 | UTC cron | IST | Role |
 |---|---|---|
 | `30 4 * * *` (default `JOBDIGEST_CRON`) | 10:00 | digest |
-| `0 */6 * * *` | — | collect (ATS only) |
+| `0 */6 * * *` | — | collect (ATS + RSS + HTTP portals) |
+| `0 3 * * *` | 08:30 | collect-browser (dynamic/stealth portals) |
 | `0 4 * * *` | 09:30 | do not use |
 
-The digest workflow ticks every 15 minutes and no-ops unless `JOBDIGEST_CRON` matches that UTC slot. An empty secret keeps `30 4 * * *`. Manual **Run workflow** always runs. Collect stays `0 */6 * * *`.
+The digest workflow ticks every 15 minutes and no-ops unless `JOBDIGEST_CRON` matches that UTC slot. An empty secret keeps `30 4 * * *`. Manual **Run workflow** always runs. Collect stays `0 */6 * * *`. `collect-browser` installs/caches Chromium and does not run digest or sheet-sync.
 
-Hosted collect is `--ats-only` because `FetcherSession` still imports Playwright even for HTTP. Portals and RSS stay local after a confirmed HTTP 200. Hosted state is **Neon** (`DATABASE_URL`). Local pytest and `--db` use SQLite.
+`--ats-only` still skips portals and RSS (local/debug). Hosted 6h collect is `--portal-fetch http` so ATS, RSS (`httpx`/`feedparser`), and HTTP portals run without launching Chrome. Dynamic/stealth rows run only on `collect-browser`. Hosted state is **Neon** (`DATABASE_URL`). Local pytest and `--db` use SQLite. Playwright wheels are required so `FetcherSession` can import; Chromium binaries are not. GitHub datacenter IPs can still lose to Cloudflare; `solve_cloudflare: true` is per-row and not a guarantee.
 
 Telegram uses Bot API `sendMessage` with plain text (no HTML parse mode). Cron workflows set `JOBDIGEST_REQUIRE_TELEGRAM=1` so a required send fails if the token or chat id is missing.
 
@@ -77,6 +79,7 @@ Python 3.11+ (CI uses 3.12).
 
 ```bash
 pip install -e ".[dev]"
+python -m playwright install chromium   # only if you will enable fetch: dynamic or stealth
 cp .env.example .env
 cp config/profile.example.yaml config/profile.yaml
 cp config/companies.example.yaml config/companies.yaml
@@ -101,23 +104,26 @@ One-shot local run (Git Bash on Windows is fine):
 chmod +x start.sh && ./start.sh
 ```
 
-That runs `collect --ats-only`, then `digest`, then `sheet-sync` against `data/jobs.db`.
+That runs `collect --portal-fetch http`, then `digest`, then `sheet-sync` against `data/jobs.db`.
 
 ```bash
+python -m jobdigest collect --portal-fetch http --db data/jobs.db
 python -m jobdigest collect --ats-only --db data/jobs.db
+python -m playwright install chromium
+python -m jobdigest collect --skip-ats --skip-feeds --portal-fetch dynamic --portal-fetch stealth --db data/jobs.db
 python -m jobdigest score --db data/jobs.db
 python -m jobdigest digest --db data/jobs.db
 python -m jobdigest sheet-append --url https://example.com/job --db data/jobs.db
 python -m jobdigest sheet-sync --db data/jobs.db
 ```
 
-Without `--ats-only`, collect also walks `config/portals.yaml` (one HTTP `FetcherSession`, User-Agent `JobHunt/0.1`, robots.txt, 3.5s delay between requests to the same host) and `config/feeds.yaml` (`feedparser`). Enable a portal or feed only after a real 200 response. SPA targets and kill-list rows stay `enabled: false`.
+`--ats-only` skips `config/portals.yaml` and `config/feeds.yaml`. Without it, collect walks enabled portals (`fetch: http` via `FetcherSession`; `dynamic` / `stealth` via Playwright sessions) and RSS (`feedparser`). User-Agent is `JobHunt/0.1`, with robots.txt and a 3.5s delay between requests to the same host. Enable a portal or feed only after a real 200 with that fetch mode. SPA and kill-list rows stay `enabled: false`. Install Chromium before enabling `fetch: dynamic` or `fetch: stealth`.
 
 If `DATABASE_URL` is set and you omit `--db`, collect and digest use Neon. `--db` always selects SQLite.
 
 ## Hosted setup (GitHub Actions)
 
-Actions checks out the public example YAML, then writes private config from secrets onto the runner. A company, portal, or feed is fetched only when that row’s `enabled:` is true. All-false YAML is a successful no-op, not a collect failure. Hosted collect is `--ats-only`, so portal and feed flags apply only to local runs.
+Actions checks out the public example YAML, then writes private config from secrets onto the runner. A company, portal, or feed is fetched only when that row’s `enabled:` is true. All-false YAML is a successful no-op, not a collect failure. Hosted 6h collect uses `--portal-fetch http`. Dynamic and stealth portals run on `collect-browser` only.
 
 Paste the full contents of each local `config/*.yaml` file into the matching `*_YAML` secret. Companies you want collected must have `enabled: true` in `COMPANIES_YAML`.
 

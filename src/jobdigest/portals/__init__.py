@@ -9,10 +9,18 @@ from jobdigest.portals import foss_united, hasjob, null_community
 from jobdigest.portals.generic import jobs_from_cards, parse as parse_generic
 from jobdigest.portals.robots import check_url
 from jobdigest.portals.session import (
+    ALLOWED_FETCH,
+    FETCH_DYNAMIC,
+    FETCH_HTTP,
+    FETCH_STEALTH,
+    SessionBundle,
+    close_bundle,
     close_session,
     get_html,
     is_challenge,
+    open_bundle,
     open_session,
+    portal_fetch_mode,
 )
 
 PARSERS: dict[str, Callable[..., list[NormalizedJob]]] = {
@@ -56,6 +64,7 @@ def run_one(
     portal: dict,
     *,
     session=None,
+    sessions: SessionBundle | None = None,
     sleep: Callable[[float], None] | None = None,
     last_host: dict | None = None,
     robots_cache: dict[str, str] | None = None,
@@ -74,6 +83,16 @@ def run_one(
             detail=f"unknown parser {parser_name!r}",
         )
 
+    fetch = portal_fetch_mode(portal)
+    if fetch not in ALLOWED_FETCH:
+        return _error(
+            name=name,
+            url=url,
+            error_class="parse",
+            detail=f"unknown fetch {fetch!r}",
+        )
+    solve_cf = bool(portal.get("solve_cloudflare"))
+
     if sleep is None:
         import time
 
@@ -88,16 +107,57 @@ def run_one(
 
     try:
         if get_html_fn is not None:
-            fetched = get_html_fn(session, url, sleep=sleep, last_host=last_host)
+            fetched = get_html_fn(
+                session,
+                url,
+                sleep=sleep,
+                last_host=last_host,
+                fetch=fetch,
+                solve_cloudflare=solve_cf,
+            )
         else:
-            if session is None:
-                session = open_session()
-            fetched = get_html(session, url, sleep=sleep, last_host=last_host)
+            active = session
+            if active is None and sessions is not None:
+                if fetch in sessions.errors:
+                    return _error(
+                        name=name,
+                        url=url,
+                        error_class="http",
+                        detail=sessions.errors[fetch],
+                    )
+                active = sessions.get(fetch)
+            if active is None:
+                if fetch != FETCH_HTTP:
+                    return _error(
+                        name=name,
+                        url=url,
+                        error_class="http",
+                        detail=f"no session for fetch {fetch!r}",
+                    )
+                active = open_session()
+            fetched = get_html(
+                active,
+                url,
+                sleep=sleep,
+                last_host=last_host,
+                fetch=fetch,
+                solve_cloudflare=solve_cf,
+            )
         if len(fetched) == 2:
             status, html = fetched
             page: Any = None
         else:
             status, html, page = fetched[0], fetched[1], fetched[2]
+    except TypeError:
+        if get_html_fn is not None:
+            fetched = get_html_fn(session, url, sleep=sleep, last_host=last_host)
+            if len(fetched) == 2:
+                status, html = fetched
+                page = None
+            else:
+                status, html, page = fetched[0], fetched[1], fetched[2]
+        else:
+            raise
     except Exception as exc:
         klass = "timeout" if "timeout" in type(exc).__name__.lower() or "timeout" in str(exc).lower() else "http"
         return _error(name=name, url=url, error_class=klass, detail=str(exc))
@@ -144,11 +204,19 @@ def run_one(
 
 
 __all__ = [
+    "ALLOWED_FETCH",
+    "FETCH_DYNAMIC",
+    "FETCH_HTTP",
+    "FETCH_STEALTH",
     "PARSERS",
     "PortalResult",
+    "SessionBundle",
+    "close_bundle",
     "close_session",
     "is_challenge",
     "jobs_from_cards",
+    "open_bundle",
     "open_session",
+    "portal_fetch_mode",
     "run_one",
 ]

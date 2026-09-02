@@ -9,7 +9,17 @@ def _cmd_collect(args: argparse.Namespace) -> int:
     from jobdigest.collect import run
 
     db = Path(args.db) if args.db else None
-    return int(run(db_path=db, ats_only=bool(args.ats_only)))
+    portal_fetch = tuple(args.portal_fetch) if getattr(args, "portal_fetch", None) else None
+    return int(
+        run(
+            db_path=db,
+            ats_only=bool(args.ats_only),
+            skip_ats=bool(getattr(args, "skip_ats", False)),
+            skip_portals=bool(getattr(args, "skip_portals", False)),
+            skip_feeds=bool(getattr(args, "skip_feeds", False)),
+            portal_fetch=portal_fetch,
+        )
+    )
 
 
 def _cmd_score(args: argparse.Namespace) -> int:
@@ -61,6 +71,28 @@ def build_parser() -> argparse.ArgumentParser:
         "--ats-only",
         action="store_true",
         help="skip portals.yaml and feeds.yaml",
+    )
+    p_collect.add_argument(
+        "--skip-ats",
+        action="store_true",
+        help="skip companies.yaml ATS fetch",
+    )
+    p_collect.add_argument(
+        "--skip-portals",
+        action="store_true",
+        help="skip portals.yaml",
+    )
+    p_collect.add_argument(
+        "--skip-feeds",
+        action="store_true",
+        help="skip feeds.yaml",
+    )
+    p_collect.add_argument(
+        "--portal-fetch",
+        action="append",
+        choices=("http", "dynamic", "stealth"),
+        dest="portal_fetch",
+        help="only run portals with this fetch mode (repeatable)",
     )
     p_collect.add_argument(
         "--db",

@@ -62,3 +62,104 @@ def test_challenge_html_is_challenge():
     html = _html("challenge.html")
     assert is_challenge(html, 200) is True
     assert is_challenge("ok", 403) is True
+
+
+def test_run_one_unknown_fetch_is_parse_error():
+    from jobdigest.portals import run_one
+
+    result = run_one(
+        {
+            "name": "bad",
+            "url": "https://example.com/jobs",
+            "parser": "generic_cards",
+            "fetch": "chrome",
+        },
+        allowed_fn=lambda url: True,
+        get_html_fn=lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not fetch")),
+    )
+    assert result.status == "error"
+    assert result.error_class == "parse"
+    assert "chrome" in (result.detail or "")
+
+
+def test_run_one_unknown_parser():
+    from jobdigest.portals import run_one
+
+    result = run_one(
+        {"name": "otta", "url": "https://otta.com/jobs", "parser": "kill"},
+        allowed_fn=lambda url: True,
+    )
+    assert result.status == "error"
+    assert result.error_class == "parse"
+
+
+def test_run_one_dynamic_uses_injected_get_html():
+    from jobdigest.portals import run_one
+
+    seen = {}
+    html = _html("generic_cards.html")
+
+    def get_html_fn(session, url, **kwargs):
+        seen["fetch"] = kwargs.get("fetch")
+        seen["solve"] = kwargs.get("solve_cloudflare")
+        return 200, html
+
+    result = run_one(
+        {
+            "name": "spa",
+            "url": "https://spa.example/jobs",
+            "parser": "generic_cards",
+            "fetch": "dynamic",
+        },
+        allowed_fn=lambda url: True,
+        get_html_fn=get_html_fn,
+    )
+    assert seen["fetch"] == "dynamic"
+    assert result.status == "ok"
+    assert len(result.jobs) == 2
+
+
+def test_run_one_stealth_passes_solve_cloudflare():
+    from jobdigest.portals import run_one
+
+    seen = {}
+    html = _html("generic_cards.html")
+
+    def get_html_fn(session, url, **kwargs):
+        seen["fetch"] = kwargs.get("fetch")
+        seen["solve"] = kwargs.get("solve_cloudflare")
+        return 200, html, None
+
+    result = run_one(
+        {
+            "name": "cf",
+            "url": "https://cf.example/jobs",
+            "parser": "generic_cards",
+            "fetch": "stealth",
+            "solve_cloudflare": True,
+        },
+        allowed_fn=lambda url: True,
+        get_html_fn=get_html_fn,
+    )
+    assert seen["fetch"] == "stealth"
+    assert seen["solve"] is True
+    assert result.status == "ok"
+
+
+def test_run_one_bundle_error_is_http():
+    from jobdigest.portals import SessionBundle, run_one
+
+    bundle = SessionBundle(errors={"dynamic": "no chrome"})
+    result = run_one(
+        {
+            "name": "spa",
+            "url": "https://spa.example/jobs",
+            "parser": "generic_cards",
+            "fetch": "dynamic",
+        },
+        sessions=bundle,
+        allowed_fn=lambda url: True,
+    )
+    assert result.status == "error"
+    assert result.error_class == "http"
+    assert "no chrome" in (result.detail or "")

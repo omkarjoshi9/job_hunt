@@ -54,6 +54,8 @@ def test_collect_upsert_twice_does_not_double(monkeypatch, tmp_path):
         return FetchResult(FetchStatus.OK, 200, jobs)
 
     monkeypatch.setattr("jobdigest.collect.load_companies", _enabled_companies)
+    monkeypatch.setattr("jobdigest.collect.load_portals", lambda: {"portals": []})
+    monkeypatch.setattr("jobdigest.collect.load_feeds", lambda: {"feeds": []})
     db = tmp_path / "jobs.db"
     code1 = run(db_path=db, sleep=lambda _: None, fetch_fn=fetch_fn)
     code2 = run(db_path=db, sleep=lambda _: None, fetch_fn=fetch_fn)
@@ -83,6 +85,8 @@ def test_collect_all_error_fails(monkeypatch, tmp_path, capsys):
         return FetchResult(FetchStatus.ERROR, 500, [], error="boom")
 
     monkeypatch.setattr("jobdigest.collect.load_companies", _enabled_companies)
+    monkeypatch.setattr("jobdigest.collect.load_portals", lambda: {"portals": []})
+    monkeypatch.setattr("jobdigest.collect.load_feeds", lambda: {"feeds": []})
     db = tmp_path / "jobs.db"
     code = run(db_path=db, sleep=lambda _: None, fetch_fn=fetch_fn)
     captured = capsys.readouterr()
@@ -95,6 +99,8 @@ def test_collect_default_yaml_no_enabled(monkeypatch, tmp_path):
         (ROOT / "config" / "companies.example.yaml").read_text(encoding="utf-8")
     )
     monkeypatch.setattr("jobdigest.collect.load_companies", lambda: payload)
+    monkeypatch.setattr("jobdigest.collect.load_portals", lambda: {"portals": []})
+    monkeypatch.setattr("jobdigest.collect.load_feeds", lambda: {"feeds": []})
     db = tmp_path / "jobs.db"
     code = run(db_path=db, sleep=lambda _: None)
     assert code == 0
@@ -137,6 +143,8 @@ def test_collect_disabled_yaml_is_not_fetched(monkeypatch, tmp_path):
         return FetchResult(FetchStatus.OK, 200, jobs)
 
     monkeypatch.setattr("jobdigest.collect.load_companies", _disabled_companies)
+    monkeypatch.setattr("jobdigest.collect.load_portals", lambda: {"portals": []})
+    monkeypatch.setattr("jobdigest.collect.load_feeds", lambda: {"feeds": []})
     db = tmp_path / "jobs.db"
     code = run(db_path=db, sleep=lambda _: None, fetch_fn=fetch_fn)
     assert code == 0
@@ -164,6 +172,8 @@ def test_collect_fail_sends_telegram(monkeypatch, tmp_path, capsys):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "42")
     monkeypatch.setattr("jobdigest.collect.load_companies", _enabled_companies)
+    monkeypatch.setattr("jobdigest.collect.load_portals", lambda: {"portals": []})
+    monkeypatch.setattr("jobdigest.collect.load_feeds", lambda: {"feeds": []})
     db = tmp_path / "jobs.db"
     code = run(
         db_path=db,
