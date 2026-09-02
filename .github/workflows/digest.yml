@@ -52,3 +52,24 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           JOBDIGEST_REQUIRE_TELEGRAM: "1"
+      - name: Write Google service account
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          python <<'PY'
+          import os
+          import sys
+          from pathlib import Path
+
+          raw = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON") or ""
+          if not raw.strip():
+              print("GOOGLE_SERVICE_ACCOUNT_JSON is required", file=sys.stderr)
+              sys.exit(1)
+          Path("google-sa.json").write_text(raw, encoding="utf-8")
+          PY
+      - run: python -m jobdigest sheet-sync
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: google-sa.json
+          JOBDIGEST_REQUIRE_SHEET: "1"

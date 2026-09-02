@@ -11,7 +11,7 @@ GitHub Actions is the clock. Python is the cook. Telegram Bot API is the mailman
 | Workflow | When | Command |
 |---|---|---|
 | [`.github/workflows/collect.yml`](.github/workflows/collect.yml) | every 6 hours UTC + `workflow_dispatch` | `python -m jobdigest collect --ats-only` |
-| [`.github/workflows/digest.yml`](.github/workflows/digest.yml) | `30 4 * * *` UTC + `workflow_dispatch` | `python -m jobdigest digest` |
+| [`.github/workflows/digest.yml`](.github/workflows/digest.yml) | `30 4 * * *` UTC + `workflow_dispatch` | `python -m jobdigest digest` then `sheet-sync` |
 | [`.github/workflows/ci.yml`](.github/workflows/ci.yml) | push / pull_request | `pytest` only |
 
 | UTC cron | IST |
@@ -28,9 +28,9 @@ Telegram: Bot API `sendMessage`, plain text, no HTML parse mode. Non-empty diges
 
 ### GitHub secrets
 
-**Secrets:** `OPENROUTER_API_KEY`, `DATABASE_URL`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `JOBDIGEST_ENABLE`, `PROFILE_YAML`, `COMPANIES_YAML`, `MODELS_YAML`, `PORTALS_YAML`, `FEEDS_YAML`.
+**Secrets:** `OPENROUTER_API_KEY`, `DATABASE_URL`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `JOBDIGEST_ENABLE`, `PROFILE_YAML`, `COMPANIES_YAML`, `MODELS_YAML`, `PORTALS_YAML`, `FEEDS_YAML`, `GOOGLE_SHEET_ID`, `GOOGLE_SERVICE_ACCOUNT_JSON`.
 
-Paste the full contents of each local `config/*.yaml` file into the matching `*_YAML` secret. `JOBDIGEST_ENABLE` is the comma-separated company ids.
+Paste the full contents of each local `config/*.yaml` file into the matching `*_YAML` secret. `JOBDIGEST_ENABLE` is the comma-separated company ids. `GOOGLE_SERVICE_ACCOUNT_JSON` on GitHub is the service-account JSON **text**, not a path.
 
 Never put keys in workflow YAML or git. Chat ids stay out of git.
 
@@ -45,11 +45,17 @@ Create a Postgres project and copy the connection string into `DATABASE_URL` (`.
 
 `workflow_dispatch` on digest sends a real Telegram when secrets exist (manual smoke). Default `pytest` is offline SQLite only.
 
-## I6 — applied Google Sheet
+## I6 — Google Sheet
 
-`python -m jobdigest sheet-append --url …` writes a local `applications` row, then appends **only** those unsynced rows to Google Sheets (Date, Company, Role, Link, Source, Status, Notes). Collect, score, and digest never write the sheet. Missing `GOOGLE_SHEET_ID` / `GOOGLE_SERVICE_ACCOUNT_JSON` fails **sheet-append** only (local row is kept for retry). Duplicate and utm-tagged URLs stay one DB row and one sheet row.
+Hosted **digest** runs `python -m jobdigest sheet-sync` after Telegram. It **appends** new offcampus guest jobs (same relevant scored jobs as the digest, up to `digest_max` new URLs). If a link is already on the sheet, that row is left alone — including Applied, Status, Campus, and Notes you typed. Collect never writes the sheet.
 
-Put a service-account JSON path in `.env` (gitignored). Share the spreadsheet with that account's `client_email` as Editor. Freeze row 1 in the Google UI. Sheets on Actions is out of I7.
+Columns: Date, Company, Role, Link, Source, **Campus**, **Applied**, Status, Notes. Repo rows are `Campus=offcampus` with Applied and Status blank. **Oncampus** rows are yours only; add them by hand.
+
+`python -m jobdigest sheet-append --url …` still writes a local `applications` row and appends unsynced applies (local). Duplicate and utm-tagged URLs stay one DB row and one sheet row.
+
+Put the spreadsheet id in `GOOGLE_SHEET_ID`. Locally, `GOOGLE_SERVICE_ACCOUNT_JSON` is a gitignored JSON **path**. On Actions, the secret is the **JSON file contents**; the workflow writes a temp file. Share the sheet with the service account `client_email` as Editor. Freeze row 1.
+
+Missing Google creds fail **sheet-append** / **sheet-sync** only. Cron digest sets `JOBDIGEST_REQUIRE_SHEET=1`.
 
 ## I5 — portals + RSS
 
@@ -108,7 +114,7 @@ chmod +x start.sh && ./start.sh
 Git Bash on Windows. One-shot `collect --ats-only` then `digest` against `data/jobs.db`.
 
 ```
-python -m jobdigest collect|score|digest|sheet-append
+python -m jobdigest collect|score|digest|sheet-append|sheet-sync
 ```
 
 ```
@@ -116,4 +122,5 @@ python -m jobdigest collect --ats-only --db data/jobs.db
 python -m jobdigest score --db data/jobs.db
 python -m jobdigest digest --db data/jobs.db
 python -m jobdigest sheet-append --url https://example.com/job --db data/jobs.db
+python -m jobdigest sheet-sync --db data/jobs.db
 ```

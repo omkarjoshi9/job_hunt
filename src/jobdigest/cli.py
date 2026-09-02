@@ -43,10 +43,17 @@ def _cmd_sheet(args: argparse.Namespace) -> int:
     )
 
 
+def _cmd_sheet_sync(args: argparse.Namespace) -> int:
+    from jobdigest.sheet import sync
+
+    db = Path(args.db) if args.db else None
+    return int(sync(db_path=db))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="jobdigest",
-        description="Daily intern job digest (collect, score, digest, sheet-append).",
+        description="Daily intern job digest (collect, score, digest, sheet-append, sheet-sync).",
     )
     sub = parser.add_subparsers(dest="command", required=False)
     p_collect = sub.add_parser("collect", help="fetch ATS JSON, portals, and RSS into SQLite")
@@ -82,6 +89,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_sheet.add_argument("--notes", default="")
     p_sheet.add_argument("--source", default="")
     p_sheet.set_defaults(func=_cmd_sheet)
+
+    p_sync = sub.add_parser(
+        "sheet-sync",
+        help="append new offcampus digest guests to Google Sheets; skip existing URLs",
+    )
+    p_sync.add_argument("--db", default=None, help=db_help)
+    p_sync.set_defaults(func=_cmd_sheet_sync)
     return parser
 
 

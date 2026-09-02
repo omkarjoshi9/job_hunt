@@ -4,7 +4,7 @@ from jobdigest.cli import build_parser, main
 from jobdigest.collect import run as collect_run
 from jobdigest.config import load_models, load_profile
 from jobdigest.db import connect, guest_rows, upsert_application, upsert_job, upsert_score
-from jobdigest.sheet import HEADERS, run
+from jobdigest.sheet import CAMPUS_OFF, HEADERS, OLD_HEADERS, run, sync
 
 
 class FakeSheet:
@@ -24,6 +24,9 @@ class FakeSheet:
         _ = kwargs
         payload = values if values is not None and not isinstance(range_name, list) else range_name
         if isinstance(payload, list) and payload and isinstance(payload[0], list):
+            if len(payload) > 1:
+                self.rows = [list(r) for r in payload]
+                return
             row = list(payload[0])
         else:
             row = list(payload)
@@ -36,7 +39,7 @@ class FakeSheet:
 def _data_rows(sheet: FakeSheet) -> list[list[str]]:
     if not sheet.rows:
         return []
-    first = [str(c).strip() for c in sheet.rows[0][:7]]
+    first = [str(c).strip() for c in sheet.rows[0][: len(HEADERS)]]
     if first == HEADERS:
         return sheet.rows[1:]
     return sheet.rows
@@ -198,3 +201,175 @@ def test_collect_score_digest_source_has_no_gspread():
     for name in ("collect.py", "score.py", "digest.py"):
         text = (ROOT / "src" / "jobdigest" / name).read_text(encoding="utf-8").lower()
         assert "gspread" not in text, name
+
+
+def _relevant_job(conn, *, url: str, company: str, title: str):
+    profile = load_profile()
+    models = load_models()
+    action, jid = upsert_job(
+        conn,
+        profile,
+        apply_url=url,
+        hosted_url=url,
+        source="greenhouse",
+        external_id=url.rsplit("/", 1)[-1],
+        company_id=None,
+        company=company,
+        title=title,
+        location_raw="Pune",
+        description_text="Intern role in Pune",
+        raw_json="{}",
+        ats="greenhouse",
+        employment_hint="intern",
+    )
+    assert action == "insert" and jid is not None
+    upsert_score(
+        conn,
+        jid,
+        models.score_model,
+        models.score_prompt_version,
+        True,
+        90.0,
+        {"why": "fit"},
+    )
+    return jid
+
+
+def test_sheet_sync_appends_offcampus_blank_applied(tmp_path, capsys):
+    db = tmp_path / "jobs.db"
+    conn = connect(db)
+    try:
+        _relevant_job(
+            conn,
+            url="https://new.example/intern",
+            company="Acme",
+            title="Software Engineer Intern",
+        )
+    finally:
+        conn.close()
+    sheet = FakeSheet()
+    assert sync(db_path=db, worksheet=sheet) == 0
+    _ = capsys.readouterr()
+    rows = _data_rows(sheet)
+    assert len(rows) == 1
+    assert rows[0][1] == "Acme"
+    assert rows[0][3] == "https://new.example/intern"
+    assert rows[0][5] == CAMPUS_OFF
+    assert rows[0][6] == ""
+    assert rows[0][7] == ""
+    snapshot = [list(r) for r in sheet.rows]
+    assert sync(db_path=db, worksheet=sheet) == 0
+    _ = capsys.readouterr()
+    assert sheet.rows == snapshot
+    assert sheet.appends == 1
+
+
+def test_sheet_sync_keeps_hand_edited_applied_status(tmp_path, capsys):
+    db = tmp_path / "jobs.db"
+    url = "https://edit.example/intern"
+    conn = connect(db)
+    try:
+        _relevant_job(
+            conn,
+            url=url,
+            company="Acme",
+            title="Software Engineer Intern",
+        )
+    finally:
+        conn.close()
+    sheet = FakeSheet(
+        rows=[
+            HEADERS,
+            [
+                "2026-01-01",
+                "Acme",
+                "Software Engineer Intern",
+                url,
+                "greenhouse",
+                CAMPUS_OFF,
+                "yes",
+                "oa",
+                "mine",
+            ],
+        ]
+    )
+    before = [list(r) for r in sheet.rows]
+    assert sync(db_path=db, worksheet=sheet) == 0
+    _ = capsys.readouterr()
+    assert sheet.appends == 0
+    assert sheet.rows == before
+
+
+def test_sheet_sync_skips_oncampus_url(tmp_path, capsys):
+    db = tmp_path / "jobs.db"
+    url = "https://campus.example/intern"
+    conn = connect(db)
+    try:
+        _relevant_job(
+            conn,
+            url=url,
+            company="CollegeCo",
+            title="Software Engineer Intern",
+        )
+    finally:
+        conn.close()
+    sheet = FakeSheet(
+        rows=[
+            HEADERS,
+            [
+                "2026-01-01",
+                "CollegeCo",
+                "Software Engineer Intern",
+                url,
+                "",
+                "oncampus",
+                "",
+                "",
+                "",
+            ],
+        ]
+    )
+    before = [list(r) for r in sheet.rows]
+    assert sync(db_path=db, worksheet=sheet) == 0
+    _ = capsys.readouterr()
+    assert sheet.appends == 0
+    assert sheet.rows[1][5] == "oncampus"
+    assert sheet.rows == before
+
+
+def test_sheet_sync_migrates_old_headers(tmp_path, capsys):
+    db = tmp_path / "jobs.db"
+    conn = connect(db)
+    try:
+        _relevant_job(
+            conn,
+            url="https://old.example/intern",
+            company="Acme",
+            title="Software Engineer Intern",
+        )
+    finally:
+        conn.close()
+    sheet = FakeSheet(
+        rows=[
+            OLD_HEADERS,
+            [
+                "2026-01-01",
+                "KeepCo",
+                "Intern",
+                "https://keep.example/a",
+                "greenhouse",
+                "oa",
+                "note",
+            ],
+        ]
+    )
+    assert sync(db_path=db, worksheet=sheet) == 0
+    _ = capsys.readouterr()
+    assert sheet.rows[0] == HEADERS
+    keep = sheet.rows[1]
+    assert keep[1] == "KeepCo"
+    assert keep[5] == CAMPUS_OFF
+    assert keep[6] == ""
+    assert keep[7] == "oa"
+    assert keep[8] == "note"
+    assert any(row[3] == "https://old.example/intern" for row in sheet.rows[1:])

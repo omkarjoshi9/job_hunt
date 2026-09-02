@@ -19,6 +19,9 @@ class _FakeSheet:
         _ = kwargs
         payload = values if values is not None and not isinstance(range_name, list) else range_name
         if isinstance(payload, list) and payload and isinstance(payload[0], list):
+            if len(payload) > 1:
+                self.rows = [list(r) for r in payload]
+                return
             row = list(payload[0])
         else:
             row = list(payload)
@@ -31,7 +34,7 @@ class _FakeSheet:
 def test_help_lists_all_commands():
     parser = build_parser()
     text = parser.format_help()
-    for name in ("collect", "score", "digest", "sheet-append"):
+    for name in ("collect", "score", "digest", "sheet-append", "sheet-sync"):
         assert name in text
 
 

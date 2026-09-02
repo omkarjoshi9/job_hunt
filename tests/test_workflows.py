@@ -14,6 +14,8 @@ def test_ci_stays_pytest_only():
     assert "MODELS_YAML" not in text
     assert "PORTALS_YAML" not in text
     assert "FEEDS_YAML" not in text
+    assert "GOOGLE_SHEET" not in text
+    assert "sheet-sync" not in text
 
 
 def test_collect_workflow():
@@ -39,6 +41,7 @@ def test_collect_workflow():
     assert "git commit" not in text
     assert "jobs.db" not in text
     assert "sk-or-" not in text
+    assert "sheet-sync" not in text
 
 
 def test_digest_workflow_tz():
@@ -57,5 +60,9 @@ def test_digest_workflow_tz():
     assert "secrets.PORTALS_YAML" in text
     assert "secrets.FEEDS_YAML" in text
     assert "JOBDIGEST_REQUIRE_TELEGRAM" in text
+    assert "python -m jobdigest sheet-sync" in text
+    assert "secrets.GOOGLE_SHEET_ID" in text
+    assert "secrets.GOOGLE_SERVICE_ACCOUNT_JSON" in text
+    assert "JOBDIGEST_REQUIRE_SHEET" in text
     assert "git commit" not in text
     assert "--ats-only" not in text

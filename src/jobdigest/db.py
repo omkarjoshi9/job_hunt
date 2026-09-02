@@ -598,6 +598,29 @@ def guest_rows(
     ).fetchall()
 
 
+def relevant_unapplied_jobs(
+    conn: Conn,
+    model: str,
+    prompt_version: str,
+) -> list[RowLike]:
+    return conn.execute(
+        """
+        SELECT jobs.*, scores.score AS score, scores.reasons_json AS reasons_json
+        FROM jobs
+        JOIN scores ON scores.job_id = jobs.id
+        WHERE scores.relevant = 1
+          AND scores.model = ?
+          AND scores.prompt_version = ?
+          AND NOT EXISTS (
+            SELECT 1 FROM applications
+            WHERE applications.apply_url_norm = jobs.apply_url_norm
+          )
+        ORDER BY scores.score DESC, jobs.id ASC
+        """,
+        (model, prompt_version),
+    ).fetchall()
+
+
 _APP_STATUSES = frozenset(
     {"applied", "oa", "interview", "offer", "rejected", "ghosted"}
 )
