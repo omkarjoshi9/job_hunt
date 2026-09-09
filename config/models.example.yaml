@@ -1,8 +1,11 @@
 score:
   model: openai/gpt-4o-mini
-  prompt_version: v3
+  prompt_version: v5
   batch_size: 12
 summarize:
   model: anthropic/claude-sonnet-4
   prompt_version: v1
 batch_size: 12
+blurb:
+  model: anthropic/claude-sonnet-4
+  prompt_version: v1

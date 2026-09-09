@@ -5,13 +5,16 @@ from collections.abc import Callable
 import httpx
 
 from jobdigest.ats.ashby import AshbyAdapter
+from jobdigest.ats.bamboohr import BambooHRAdapter
 from jobdigest.ats.base import BoardAdapter, CompanyConfig, FetchResult, FetchStatus, NormalizedJob
 from jobdigest.ats.greenhouse import GreenhouseAdapter
 from jobdigest.ats.lever import LeverAdapter
+from jobdigest.ats.smartrecruiters import SmartRecruitersAdapter
 from jobdigest.ats.workable import WorkableAdapter
 
 __all__ = [
     "AshbyAdapter",
+    "BambooHRAdapter",
     "BoardAdapter",
     "CompanyConfig",
     "FetchResult",
@@ -19,11 +22,14 @@ __all__ = [
     "GreenhouseAdapter",
     "LeverAdapter",
     "NormalizedJob",
+    "SmartRecruitersAdapter",
     "WorkableAdapter",
     "get_adapter",
 ]
 
-_KNOWN = frozenset({"greenhouse", "lever", "ashby", "workable"})
+_KNOWN = frozenset(
+    {"greenhouse", "lever", "ashby", "workable", "smartrecruiters", "bamboohr"}
+)
 
 
 def get_adapter(
@@ -41,4 +47,8 @@ def get_adapter(
         return LeverAdapter(client, sleep=sleep)
     if key == "ashby":
         return AshbyAdapter(client, sleep=sleep)
+    if key == "smartrecruiters":
+        return SmartRecruitersAdapter(client, sleep=sleep)
+    if key == "bamboohr":
+        return BambooHRAdapter(client, sleep=sleep)
     return WorkableAdapter(client, sleep=sleep)

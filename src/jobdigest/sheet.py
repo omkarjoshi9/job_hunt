@@ -8,6 +8,7 @@ from typing import Any
 from jobdigest.config import load_models, load_profile
 from jobdigest.db import (
     connect,
+    ensure_application,
     mark_sheet_synced,
     pending_sheet_rows,
     relevant_unapplied_jobs,
@@ -51,6 +52,32 @@ HEADER_FORMAT = {
 def require_sheet() -> bool:
     raw = (os.environ.get("JOBDIGEST_REQUIRE_SHEET") or "").strip().lower()
     return raw in {"1", "true", "yes"}
+
+
+_SHEET_FAILED = "SHEET FAILED missing GOOGLE_SHEET_ID or GOOGLE_SERVICE_ACCOUNT_JSON"
+
+
+def _missing_sheet_creds() -> bool:
+    sheet_id = (os.environ.get("GOOGLE_SHEET_ID") or "").strip()
+    json_path = (os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON") or "").strip()
+    return not sheet_id or not json_path
+
+
+def _resolve_worksheet(kind: str, worksheet: Any | None) -> tuple[Any | None, int | None]:
+    if worksheet is not None:
+        return worksheet, None
+    if _missing_sheet_creds():
+        if require_sheet():
+            print(_SHEET_FAILED, file=sys.stderr)
+            return None, 1
+        print(f"{kind} skip missing credentials")
+        return None, 0
+    try:
+        return open_worksheet(), None
+    except Exception as exc:
+        print(f"{kind} error {exc}", file=sys.stderr)
+        print(f"{kind} error")
+        return None, 1
 
 
 def open_worksheet():
@@ -228,6 +255,20 @@ def _guest_row(job: Any, date: str) -> list[str]:
     ]
 
 
+def _ensure_saved_application(conn: Any, job: Any, link: str, sheet_row: int) -> None:
+    _action, app_id = ensure_application(
+        conn,
+        apply_url=link,
+        company=str(job["company"] or ""),
+        title=str(job["title"] or ""),
+        status="saved",
+        source=str(job["source"] or ""),
+        job_id=int(job["id"]),
+    )
+    if app_id is not None:
+        mark_sheet_synced(conn, app_id, sheet_row)
+
+
 def run(
     *,
     db_path: Path | None = None,
@@ -257,14 +298,9 @@ def run(
             )
         pending = pending_sheet_rows(conn)
         pending_n = len(pending)
-        ws = worksheet
-        if ws is None:
-            try:
-                ws = open_worksheet()
-            except Exception as exc:
-                print(f"sheet-append error {exc}", file=sys.stderr)
-                print("sheet-append error")
-                return 1
+        ws, gate_code = _resolve_worksheet("sheet-append", worksheet)
+        if gate_code is not None:
+            return gate_code
         ensure_headers(ws)
         values = list(ws.get_all_values() or [])
         if not values:
@@ -318,14 +354,9 @@ def sync(*, db_path: Path | None = None, worksheet: Any | None = None) -> int:
     appended = 0
     skipped_existing = 0
     try:
-        ws = worksheet
-        if ws is None:
-            try:
-                ws = open_worksheet()
-            except Exception as exc:
-                print(f"sheet-sync error {exc}", file=sys.stderr)
-                print("sheet-sync error")
-                return 1
+        ws, gate_code = _resolve_worksheet("sheet-sync", worksheet)
+        if gate_code is not None:
+            return gate_code
         ensure_headers(ws)
         values = list(ws.get_all_values() or [])
         if not values:
@@ -334,24 +365,30 @@ def sync(*, db_path: Path | None = None, worksheet: Any | None = None) -> int:
         models = load_models()
         profile = load_profile()
         jobs = relevant_unapplied_jobs(
-            conn, models.score_model, models.score_prompt_version
+            conn,
+            models.score_model,
+            models.score_prompt_version,
+            profile=profile,
         )
         date = utc_now()[:10]
         limit = max(int(profile.digest_max), 0)
         for job in jobs:
-            if appended >= limit:
-                break
             link = _sheet_link(job)
             if link is None:
                 continue
             norm = normalize_url(link)
             if norm in existing:
                 skipped_existing += 1
+                _ensure_saved_application(conn, job, link, existing[norm])
+                continue
+            if appended >= limit:
                 continue
             values_row = _guest_row(job, date)
             ws.append_row(values_row, value_input_option="USER_ENTERED")
             values.append(values_row)
-            existing[norm] = len(values)
+            sheet_row = len(values)
+            existing[norm] = sheet_row
+            _ensure_saved_application(conn, job, link, sheet_row)
             appended += 1
         print(
             f"sheet-sync ok appended={appended} skipped_existing={skipped_existing}"

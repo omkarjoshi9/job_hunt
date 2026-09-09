@@ -6,7 +6,8 @@
       "absolute_url": "https://boards.greenhouse.io/example/jobs/101",
       "location": {"name": "Bengaluru, India"},
       "content": "&lt;p&gt;Build APIs in Bangalore&lt;/p&gt;",
-      "company_name": "Example Corp"
+      "company_name": "Example Corp",
+      "updated_at": "2024-06-01T00:00:00.000Z"
     },
     {
       "id": 102,

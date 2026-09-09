@@ -14,6 +14,7 @@ from jobdigest.ats.base import (
     decode_html_content,
     empty_or_ok,
     join_locations,
+    posted_at_from_item,
 )
 from jobdigest.ats.http_client import parse_json_or_none, request_get
 
@@ -44,6 +45,9 @@ class WorkableAdapter:
         self._sleep = sleep
 
     def fetch(self, company: CompanyConfig) -> FetchResult:
+        # The Workable widget /api/v1/widget/accounts/{token}?details=true endpoint returns
+        # all active jobs in a single response; it does not support page, offset, or cursor
+        # parameters.  No pagination loop is needed or appropriate here.
         url = (
             "https://apply.workable.com/api/v1/widget/accounts/"
             f"{company.token}?details=true"
@@ -102,4 +106,5 @@ class WorkableAdapter:
             ats=self.ats,
             external_id=shortcode,
             raw_json=json.dumps(item, separators=(",", ":"), ensure_ascii=False),
+            posted_at=posted_at_from_item(item, "created_at"),
         )

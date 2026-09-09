@@ -1,0 +1,13 @@
+companies:
+  - id: mactores
+    name: Mactores
+    ats: lever
+    token: mactores
+    enabled: false
+    notes: "already in inventory; discover must mark known"
+  - id: stripe
+    name: Stripe
+    ats: greenhouse
+    token: stripe
+    enabled: false
+    notes: "board token known; gh_jid must not invent a second token"

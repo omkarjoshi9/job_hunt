@@ -1,0 +1,24 @@
+{
+  "offset": 0,
+  "limit": 2,
+  "totalFound": 3,
+  "content": [
+    {
+      "id": "sr-101",
+      "uuid": "uuid-101",
+      "name": "Software Engineer Intern",
+      "location": {"city": "Bengaluru", "country": "India", "remote": false},
+      "typeOfEmployment": {"id": "internship", "label": "Internship"},
+      "applyUrl": "https://www.smartrecruiters.com/example/sr-101",
+      "company": {"identifier": "example", "name": "Example Corp"}
+    },
+    {
+      "id": "sr-102",
+      "uuid": "uuid-102",
+      "name": "Staff Engineer",
+      "location": {"city": "Austin", "country": "USA", "remote": true},
+      "typeOfEmployment": {"id": "permanent", "label": "Full-time"},
+      "company": {"identifier": "example", "name": "Example Corp"}
+    }
+  ]
+}

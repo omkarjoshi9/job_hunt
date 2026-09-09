@@ -17,6 +17,7 @@ def _cmd_collect(args: argparse.Namespace) -> int:
             skip_ats=bool(getattr(args, "skip_ats", False)),
             skip_portals=bool(getattr(args, "skip_portals", False)),
             skip_feeds=bool(getattr(args, "skip_feeds", False)),
+            skip_marketplaces=bool(getattr(args, "skip_marketplaces", False)),
             portal_fetch=portal_fetch,
         )
     )
@@ -33,7 +34,7 @@ def _cmd_digest(args: argparse.Namespace) -> int:
     from jobdigest.digest import run
 
     db = Path(args.db) if args.db else None
-    return int(run(db_path=db))
+    return int(run(db_path=db, urgent_only=bool(args.urgent_only)))
 
 
 def _cmd_sheet(args: argparse.Namespace) -> int:
@@ -53,6 +54,14 @@ def _cmd_sheet(args: argparse.Namespace) -> int:
     )
 
 
+def _cmd_contacts(args: argparse.Namespace) -> int:
+    from jobdigest.contacts import run
+
+    db = Path(args.db) if args.db else None
+    job_ids = list(args.job_id) if getattr(args, "job_id", None) else None
+    return int(run(db_path=db, limit=args.limit, job_ids=job_ids))
+
+
 def _cmd_sheet_sync(args: argparse.Namespace) -> int:
     from jobdigest.sheet import sync
 
@@ -63,14 +72,16 @@ def _cmd_sheet_sync(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="jobdigest",
-        description="Daily intern job digest (collect, score, digest, sheet-append, sheet-sync).",
+        description="Daily intern job digest (collect, score, digest, contacts, sheet-append, sheet-sync).",
     )
     sub = parser.add_subparsers(dest="command", required=False)
-    p_collect = sub.add_parser("collect", help="fetch ATS JSON, portals, and RSS into SQLite")
+    p_collect = sub.add_parser(
+        "collect", help="fetch ATS JSON, portals, RSS, and marketplaces into SQLite"
+    )
     p_collect.add_argument(
         "--ats-only",
         action="store_true",
-        help="skip portals.yaml and feeds.yaml",
+        help="skip portals, feeds, and marketplaces",
     )
     p_collect.add_argument(
         "--skip-ats",
@@ -86,6 +97,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--skip-feeds",
         action="store_true",
         help="skip feeds.yaml",
+    )
+    p_collect.add_argument(
+        "--skip-marketplaces",
+        action="store_true",
+        help="skip marketplaces.yaml",
     )
     p_collect.add_argument(
         "--portal-fetch",
@@ -110,6 +126,11 @@ def build_parser() -> argparse.ArgumentParser:
         "digest", help="score then print and send Telegram digest"
     )
     p_digest.add_argument("--db", default=None, help=db_help)
+    p_digest.add_argument(
+        "--urgent-only",
+        action="store_true",
+        help="push watchlist/high-score action cards; skip the 12-job digest",
+    )
     p_digest.set_defaults(func=_cmd_digest)
 
     p_sheet = sub.add_parser("sheet-append", help="append applied jobs to Google Sheets")
@@ -128,6 +149,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_sync.add_argument("--db", default=None, help=db_help)
     p_sync.set_defaults(func=_cmd_sheet_sync)
+
+    p_contacts = sub.add_parser(
+        "contacts",
+        help="enrich hiring-manager contacts for last digest guests",
+    )
+    p_contacts.add_argument("--db", default=None, help=db_help)
+    p_contacts.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="max jobs to enrich (default: all last-digest ids)",
+    )
+    p_contacts.add_argument(
+        "--job-id",
+        action="append",
+        type=int,
+        dest="job_id",
+        help="enrich this job id (repeatable; skips last-digest lookup)",
+    )
+    p_contacts.set_defaults(func=_cmd_contacts)
     return parser
 
 

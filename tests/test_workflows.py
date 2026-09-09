@@ -14,6 +14,8 @@ def test_ci_stays_pytest_only():
     assert "MODELS_YAML" not in text
     assert "PORTALS_YAML" not in text
     assert "FEEDS_YAML" not in text
+    assert "MARKETPLACES_YAML" not in text
+    assert "[marketplaces]" not in text
     assert "GOOGLE_SHEET" not in text
     assert "sheet-sync" not in text
     assert "playwright install" not in text
@@ -38,10 +40,14 @@ def test_pipeline_workflow():
     assert "needs.gate.outputs.due" in text
     assert "python -m jobdigest collect" in text
     assert "python -m jobdigest digest" in text
+    assert "python -m jobdigest contacts" in text
     assert "python -m jobdigest sheet-sync" in text
+    assert "Contacts enrich" in text
+    assert "secrets.JOBDIGEST_GITHUB_TOKEN" in text
     assert "--portal-fetch" not in text
     assert "--skip-ats" not in text
     assert "--skip-feeds" not in text
+    assert "--skip-marketplaces" not in text
     assert "--ats-only" not in text
     assert "playwright install-deps chromium" in text
     assert "playwright install chromium" in text
@@ -56,6 +62,8 @@ def test_pipeline_workflow():
     assert "secrets.MODELS_YAML" in text
     assert "secrets.PORTALS_YAML" in text
     assert "secrets.FEEDS_YAML" in text
+    assert "secrets.MARKETPLACES_YAML" in text
+    assert 'pip install -e ".[marketplaces]"' in text or "pip install -e \".[marketplaces]\"" in text
     assert "JOBDIGEST_REQUIRE_TELEGRAM" in text
     assert "secrets.GOOGLE_SHEET_ID" in text
     assert "secrets.GOOGLE_SERVICE_ACCOUNT_JSON" in text
@@ -74,4 +82,33 @@ def test_start_sh_uses_http_portals():
     assert "--portal-fetch http" in text
     assert "--ats-only" not in text
     assert "digest" in text
+    assert "contacts" in text
     assert "sheet-sync" in text
+    assert "jobdigest.bot" not in text
+
+
+def test_start_sh_does_not_start_bot():
+    text = (ROOT / "start.sh").read_text(encoding="utf-8")
+    assert "jobdigest.bot" not in text
+
+
+def test_pipeline_does_not_start_bot():
+    text = (WF / "pipeline.yml").read_text(encoding="utf-8")
+    assert "jobdigest.bot" not in text
+
+
+def test_pipeline_and_start_have_no_discover():
+    blob = (WF / "pipeline.yml").read_text(encoding="utf-8") + "\n" + (
+        ROOT / "start.sh"
+    ).read_text(encoding="utf-8")
+    assert "jobdigest.discover" not in blob
+
+
+def test_pipeline_urgent_branch():
+    text = (WF / "pipeline.yml").read_text(encoding="utf-8")
+    assert "secrets.JOBDIGEST_CRON_URGENT" in text
+    assert "--urgent-only" in text
+    assert "needs.gate.outputs.slot" in text
+    assert "30 8" not in text
+    assert "30 3 * * *" not in text
+    assert "jobdigest.bot" not in text

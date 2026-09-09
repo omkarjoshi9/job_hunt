@@ -1,13 +1,13 @@
 portals:
   - name: foss-united
     url: https://fossunited.org/jobs
-    enabled: false
+    enabled: true
     parser: foss_united
     fetch: http
     notes: "Enable locally after HTTP 200 HTML."
   - name: null-jobs
     url: https://jobs.null.community/
-    enabled: false
+    enabled: true
     parser: null_community
     notes: "Enable locally after HTTP 200 HTML."
   - name: hasjob
@@ -17,15 +17,15 @@ portals:
     notes: "Enable locally after HTTP 200 HTML."
   - name: hasjob-intern
     url: https://intern.hasjob.co/
-    enabled: false
+    enabled: true
     parser: hasjob
     notes: "Enable locally after HTTP 200 HTML."
   - name: huntyourtribe-intern
     url: https://huntyourtribe.com/jobs/startup-internships-in-india
-    enabled: false
+    enabled: true
     parser: generic_cards
     fetch: dynamic
-    notes: "SPA; keep false. Needs Chromium (collect-browser or local playwright install)."
+    notes: "SPA; hosted Chromium collect only. Local start.sh --portal-fetch http skips this row."
   - name: prepnplaced-apprentice
     url: https://www.prepnplaced.com/apprenticeships
     enabled: false

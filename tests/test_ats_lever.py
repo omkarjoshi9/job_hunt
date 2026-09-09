@@ -41,6 +41,8 @@ def test_two_pages_yield_three_jobs():
     assert result.jobs[0].employment_hint == "Intern"
     assert result.jobs[0].workplace_hint == "hybrid"
     assert result.jobs[0].apply_url.endswith("/apply")
+    assert result.jobs[0].posted_at == "2023-11-14T22:13:20Z"
+    assert result.jobs[1].posted_at is None
     assert result.jobs[2].title == "GET Software Engineer"
 
 

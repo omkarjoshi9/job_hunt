@@ -9,7 +9,17 @@ from typing import Any
 
 from jobdigest.config import Profile
 from jobdigest.hard_filter import hard_filter
-from jobdigest.normalize import job_identity, normalize_url
+from jobdigest.legitimacy import evaluate_structural
+from jobdigest.normalize import (
+    collapse_ws,
+    description_hash,
+    job_identity,
+    normalize_company,
+    normalize_title,
+    normalize_url,
+    posting_key,
+)
+from jobdigest.rank import PRIOR_POSITIVE, sort_rows
 
 Conn = Any
 RowLike = Any
@@ -26,7 +36,8 @@ CREATE TABLE IF NOT EXISTS companies (
   last_fetch_at TEXT,
   last_http_status INTEGER,
   last_job_count INTEGER,
-  last_error TEXT
+  last_error TEXT,
+  dead_streak INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS jobs (
@@ -47,7 +58,22 @@ CREATE TABLE IF NOT EXISTS jobs (
   hard_status TEXT NOT NULL DEFAULT 'pending'
     CHECK (hard_status IN ('pending','pass','reject')),
   hard_reason TEXT,
-  ats TEXT NOT NULL DEFAULT ''
+  ats TEXT NOT NULL DEFAULT '',
+  miss_count INTEGER NOT NULL DEFAULT 0,
+  closed_at TEXT,
+  close_reason TEXT,
+    employment_hint TEXT,
+    workplace_hint TEXT,
+    notified_at TEXT,
+    notify_kind TEXT,
+    description_hash TEXT,
+    raw_title TEXT,
+    raw_company TEXT,
+    posting_key TEXT,
+    canonical_job_id INTEGER REFERENCES jobs(id),
+    legitimacy_flag TEXT,
+    legitimacy_reasons_json TEXT,
+    posted_at TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS jobs_source_ext
   ON jobs(source, external_id) WHERE external_id IS NOT NULL AND external_id != '';
@@ -63,6 +89,7 @@ CREATE TABLE IF NOT EXISTS scores (
   score REAL,
   reasons_json TEXT,
   created_at TEXT NOT NULL,
+  stale INTEGER NOT NULL DEFAULT 0,
   UNIQUE(job_id, model, prompt_version)
 );
 
@@ -94,12 +121,32 @@ CREATE TABLE IF NOT EXISTS applications (
   company TEXT,
   title TEXT,
   applied_on TEXT NOT NULL,
-  status TEXT NOT NULL CHECK (status IN ('applied','oa','interview','offer','rejected','ghosted')),
+  status TEXT NOT NULL CHECK (status IN ('applied','oa','interview','offer','rejected','ghosted','saved','hidden')),
   source TEXT,
   notes TEXT,
   sheet_row INTEGER,
   synced_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS contacts (
+  id INTEGER PRIMARY KEY,
+  job_id INTEGER REFERENCES jobs(id),
+  company TEXT NOT NULL,
+  domain TEXT,
+  name TEXT NOT NULL,
+  email TEXT,
+  role TEXT,
+  source TEXT NOT NULL
+    CHECK (source IN ('jd','github','pattern')),
+  verified TEXT NOT NULL DEFAULT 'unverified',
+  confidence REAL,
+  created_at TEXT NOT NULL,
+  UNIQUE(job_id, name, source)
+);
+CREATE INDEX IF NOT EXISTS contacts_job_id
+  ON contacts(job_id) WHERE job_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS contacts_company
+  ON contacts(company);
 """
 
 SCHEMA_PG = SCHEMA.replace(
@@ -221,12 +268,232 @@ def utc_now() -> str:
     )
 
 
+def _table_columns(conn: Conn, table: str) -> set[str]:
+    if isinstance(conn, _PgConnection):
+        rows = conn.execute(
+            """
+            SELECT column_name AS name
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = ?
+            """,
+            (table,),
+        ).fetchall()
+        return {str(row["name"]) for row in rows}
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    names: set[str] = set()
+    for row in rows:
+        try:
+            names.add(str(row["name"]))
+        except (KeyError, IndexError, TypeError):
+            names.add(str(row[1]))
+    return names
+
+
+def migrate_schema(conn: Conn) -> None:
+    cols = _table_columns(conn, "jobs")
+    adds: list[str] = []
+    if "miss_count" not in cols:
+        adds.append("ALTER TABLE jobs ADD COLUMN miss_count INTEGER NOT NULL DEFAULT 0")
+    if "closed_at" not in cols:
+        adds.append("ALTER TABLE jobs ADD COLUMN closed_at TEXT")
+    if "close_reason" not in cols:
+        adds.append("ALTER TABLE jobs ADD COLUMN close_reason TEXT")
+    if "employment_hint" not in cols:
+        adds.append("ALTER TABLE jobs ADD COLUMN employment_hint TEXT")
+    if "workplace_hint" not in cols:
+        adds.append("ALTER TABLE jobs ADD COLUMN workplace_hint TEXT")
+    if "notified_at" not in cols:
+        adds.append("ALTER TABLE jobs ADD COLUMN notified_at TEXT")
+    if "notify_kind" not in cols:
+        adds.append("ALTER TABLE jobs ADD COLUMN notify_kind TEXT")
+    if "description_hash" not in cols:
+        adds.append("ALTER TABLE jobs ADD COLUMN description_hash TEXT")
+    if "raw_title" not in cols:
+        adds.append("ALTER TABLE jobs ADD COLUMN raw_title TEXT")
+    if "raw_company" not in cols:
+        adds.append("ALTER TABLE jobs ADD COLUMN raw_company TEXT")
+    if "posting_key" not in cols:
+        adds.append("ALTER TABLE jobs ADD COLUMN posting_key TEXT")
+    if "canonical_job_id" not in cols:
+        adds.append("ALTER TABLE jobs ADD COLUMN canonical_job_id INTEGER REFERENCES jobs(id)")
+    if "legitimacy_flag" not in cols:
+        adds.append("ALTER TABLE jobs ADD COLUMN legitimacy_flag TEXT")
+    if "legitimacy_reasons_json" not in cols:
+        adds.append("ALTER TABLE jobs ADD COLUMN legitimacy_reasons_json TEXT")
+    if "posted_at" not in cols:
+        adds.append("ALTER TABLE jobs ADD COLUMN posted_at TEXT")
+    for stmt in adds:
+        conn.execute(stmt)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS jobs_posting_key "
+        "ON jobs(posting_key) WHERE posting_key IS NOT NULL AND posting_key != ''"
+    )
+    company_cols = _table_columns(conn, "companies")
+    if company_cols and "dead_streak" not in company_cols:
+        conn.execute(
+            "ALTER TABLE companies ADD COLUMN dead_streak INTEGER NOT NULL DEFAULT 0"
+        )
+    score_cols = _table_columns(conn, "scores")
+    if score_cols and "stale" not in score_cols:
+        conn.execute(
+            "ALTER TABLE scores ADD COLUMN stale INTEGER NOT NULL DEFAULT 0"
+        )
+    _migrate_applications_status(conn)
+    _migrate_contacts_table(conn)
+    conn.commit()
+
+
+_APP_STATUS_CHECK = (
+    "status IN ('applied','oa','interview','offer','rejected','ghosted','saved','hidden')"
+)
+_APP_CREATE_SQLITE = """
+CREATE TABLE applications (
+  id INTEGER PRIMARY KEY,
+  job_id INTEGER REFERENCES jobs(id),
+  apply_url_norm TEXT NOT NULL UNIQUE,
+  company TEXT,
+  title TEXT,
+  applied_on TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('applied','oa','interview','offer','rejected','ghosted','saved','hidden')),
+  source TEXT,
+  notes TEXT,
+  sheet_row INTEGER,
+  synced_at TEXT
+)
+"""
+
+
+def _sql_allows_saved(sql: str | None) -> bool:
+    return "'saved'" in (sql or "")
+
+
+def _sqlite_applications_sql(conn: Conn) -> str | None:
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='applications'"
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        return str(row["sql"] or "")
+    except (KeyError, IndexError, TypeError):
+        return str(row[0] or "")
+
+
+def _rebuild_sqlite_applications(conn: Conn) -> None:
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute("ALTER TABLE applications RENAME TO applications_migrate_old")
+    conn.execute(_APP_CREATE_SQLITE)
+    conn.execute(
+        """
+        INSERT INTO applications (
+          id, job_id, apply_url_norm, company, title, applied_on, status,
+          source, notes, sheet_row, synced_at
+        )
+        SELECT id, job_id, apply_url_norm, company, title, applied_on, status,
+               source, notes, sheet_row, synced_at
+        FROM applications_migrate_old
+        """
+    )
+    conn.execute("DROP TABLE applications_migrate_old")
+    conn.execute("PRAGMA foreign_keys = ON")
+
+
+def _migrate_pg_applications_status(conn: Conn) -> None:
+    rows = conn.execute(
+        """
+        SELECT con.conname AS name, pg_get_constraintdef(con.oid) AS def
+        FROM pg_constraint con
+        JOIN pg_class rel ON rel.oid = con.conrelid
+        JOIN pg_namespace nsp ON nsp.oid = rel.relnamespace
+        WHERE nsp.nspname = 'public'
+          AND rel.relname = 'applications'
+          AND con.contype = 'c'
+        """
+    ).fetchall()
+    defs = []
+    for row in rows:
+        try:
+            defs.append((str(row["name"]), str(row["def"] or "")))
+        except (KeyError, IndexError, TypeError):
+            defs.append((str(row[0]), str(row[1] or "")))
+    if any(_sql_allows_saved(defn) for _name, defn in defs):
+        return
+    status_names = [
+        name
+        for name, defn in defs
+        if "status" in defn.lower() or "ghosted" in defn.lower()
+    ]
+    for name in status_names:
+        ident = "".join(ch for ch in name if ch.isalnum() or ch == "_")
+        if ident != name:
+            continue
+        conn.execute(f"ALTER TABLE applications DROP CONSTRAINT {ident}")
+    conn.execute(
+        "ALTER TABLE applications ADD CONSTRAINT applications_status_check "
+        f"CHECK ({_APP_STATUS_CHECK})"
+    )
+
+
+_CONTACT_SOURCES = frozenset({"jd", "github", "pattern"})
+
+_CONTACTS_CREATE_SQLITE = """
+CREATE TABLE contacts (
+  id INTEGER PRIMARY KEY,
+  job_id INTEGER REFERENCES jobs(id),
+  company TEXT NOT NULL,
+  domain TEXT,
+  name TEXT NOT NULL,
+  email TEXT,
+  role TEXT,
+  source TEXT NOT NULL
+    CHECK (source IN ('jd','github','pattern')),
+  verified TEXT NOT NULL DEFAULT 'unverified',
+  confidence REAL,
+  created_at TEXT NOT NULL,
+  UNIQUE(job_id, name, source)
+)
+"""
+_CONTACTS_CREATE_PG = _CONTACTS_CREATE_SQLITE.replace(
+    "id INTEGER PRIMARY KEY",
+    "id INTEGER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY",
+)
+
+
+def _migrate_contacts_table(conn: Conn) -> None:
+    cols = _table_columns(conn, "contacts")
+    if cols:
+        return
+    ddl = (
+        _CONTACTS_CREATE_PG
+        if isinstance(conn, _PgConnection)
+        else _CONTACTS_CREATE_SQLITE
+    )
+    conn.execute(ddl)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS contacts_job_id "
+        "ON contacts(job_id) WHERE job_id IS NOT NULL"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS contacts_company ON contacts(company)")
+
+
+def _migrate_applications_status(conn: Conn) -> None:
+    if isinstance(conn, _PgConnection):
+        _migrate_pg_applications_status(conn)
+        return
+    sql = _sqlite_applications_sql(conn)
+    if sql is None or _sql_allows_saved(sql):
+        return
+    _rebuild_sqlite_applications(conn)
+
+
 def init_schema(conn: Conn) -> None:
     if isinstance(conn, _PgConnection):
         conn.executescript(SCHEMA_PG)
+        migrate_schema(conn)
         conn.commit()
         return
     conn.executescript(SCHEMA)
+    migrate_schema(conn)
     conn.commit()
 
 
@@ -293,16 +560,40 @@ def update_company_fetch(
     http_status: int | None,
     job_count: int | None,
     error: str | None,
+    resolved_url: str | None = None,
+    dead_streak: int | None = None,
 ) -> None:
+    sets = [
+        "last_fetch_at = ?",
+        "last_http_status = ?",
+        "last_job_count = ?",
+        "last_error = ?",
+    ]
+    params: list[Any] = [utc_now(), http_status, job_count, error]
+    if resolved_url is not None:
+        sets.append("resolved_url = ?")
+        params.append(resolved_url)
+    if dead_streak is not None:
+        sets.append("dead_streak = ?")
+        params.append(int(dead_streak))
+    params.append(int(company_id))
     conn.execute(
-        """
-        UPDATE companies
-        SET last_fetch_at = ?, last_http_status = ?, last_job_count = ?, last_error = ?
-        WHERE id = ?
-        """,
-        (utc_now(), http_status, job_count, error, company_id),
+        f"UPDATE companies SET {', '.join(sets)} WHERE id = ?",
+        tuple(params),
     )
     conn.commit()
+
+
+_HINT_MAX = 80
+
+
+def _sanitize_hint(value: str | None, *, max_len: int = _HINT_MAX) -> str | None:
+    if value is None:
+        return None
+    text = " ".join(str(value).split())
+    if not text:
+        return None
+    return text[:max_len]
 
 
 def lookup_job(
@@ -328,6 +619,172 @@ def lookup_job(
     return None
 
 
+_ATS_CANONICAL = frozenset(
+    {"greenhouse", "lever", "ashby", "workable", "smartrecruiters", "bamboohr"}
+)
+
+
+def _ats_rank(ats: str | None) -> int:
+    return 0 if (ats or "").strip().lower() in _ATS_CANONICAL else 1
+
+
+def link_duplicate_jobs(conn: Conn, job_id: int) -> None:
+    row = conn.execute(
+        "SELECT posting_key FROM jobs WHERE id = ?",
+        (int(job_id),),
+    ).fetchone()
+    if row is None:
+        return
+    try:
+        key = str(row["posting_key"] or "").strip()
+    except (KeyError, IndexError, TypeError):
+        key = ""
+    if not key:
+        return
+    rows = conn.execute(
+        """
+        SELECT id, ats, notified_at, notify_kind
+        FROM jobs
+        WHERE posting_key = ?
+        """,
+        (key,),
+    ).fetchall()
+    if len(rows) < 2:
+        conn.execute(
+            "UPDATE jobs SET canonical_job_id = NULL WHERE id = ?",
+            (int(job_id),),
+        )
+        return
+    ranked = sorted(
+        rows,
+        key=lambda r: (_ats_rank(r["ats"]), int(r["id"])),
+    )
+    winner_id = int(ranked[0]["id"])
+    notify_at = ranked[0]["notified_at"]
+    notify_kind = ranked[0]["notify_kind"]
+    if not str(notify_at or "").strip():
+        for item in rows:
+            if str(item["notified_at"] or "").strip():
+                notify_at = item["notified_at"]
+                notify_kind = item["notify_kind"]
+                break
+    conn.execute(
+        """
+        UPDATE jobs
+        SET canonical_job_id = NULL, notified_at = ?, notify_kind = ?
+        WHERE id = ?
+        """,
+        (notify_at, notify_kind, winner_id),
+    )
+    for item in rows:
+        rid = int(item["id"])
+        if rid == winner_id:
+            continue
+        conn.execute(
+            "UPDATE jobs SET canonical_job_id = ? WHERE id = ?",
+            (winner_id, rid),
+        )
+
+
+def mark_scores_stale(conn: Conn, job_id: int) -> None:
+    conn.execute("UPDATE scores SET stale = 1 WHERE job_id = ?", (int(job_id),))
+
+
+def _store_posted_at(value: datetime | str | None) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        dt = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+        dt = dt.astimezone(timezone.utc).replace(microsecond=0)
+        return dt.isoformat().replace("+00:00", "Z")
+    text = str(value).strip()
+    return text or None
+
+
+def _company_display_name(conn: Conn, company_id: int | None) -> str | None:
+    if not company_id:
+        return None
+    row = conn.execute(
+        "SELECT display_name FROM companies WHERE id = ?",
+        (int(company_id),),
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        name = row["display_name"]
+    except (KeyError, IndexError, TypeError):
+        return None
+    text = str(name or "").strip()
+    return text or None
+
+
+def _legitimacy_peers(conn: Conn, job_id: int, desc_hash: str) -> list[dict[str, Any]]:
+    if not desc_hash:
+        return []
+    rows = conn.execute(
+        """
+        SELECT id, description_hash, source, external_id, apply_url_norm,
+               canonical_job_id, description_text
+        FROM jobs
+        WHERE description_hash = ? AND id != ?
+        """,
+        (desc_hash, int(job_id)),
+    ).fetchall()
+    peers: list[dict[str, Any]] = []
+    for row in rows:
+        text = str(row["description_text"] or "")
+        peers.append(
+            {
+                "id": row["id"],
+                "description_hash": row["description_hash"],
+                "source": row["source"],
+                "external_id": row["external_id"],
+                "apply_url_norm": row["apply_url_norm"],
+                "canonical_job_id": row["canonical_job_id"],
+                "description_len": len(collapse_ws(text)),
+            }
+        )
+    return peers
+
+
+def _stamp_legitimacy(conn: Conn, job_id: int) -> None:
+    row = conn.execute("SELECT * FROM jobs WHERE id = ?", (int(job_id),)).fetchone()
+    if row is None:
+        return
+    try:
+        company_id = row["company_id"]
+    except (KeyError, IndexError, TypeError):
+        company_id = None
+    desc_hash = str(row["description_hash"] or "")
+    job = {
+        "company_id": company_id,
+        "raw_company": row["raw_company"],
+        "company": row["company"],
+        "description_text": row["description_text"],
+        "description_hash": desc_hash,
+        "source": row["source"],
+        "external_id": row["external_id"],
+        "apply_url_norm": row["apply_url_norm"],
+        "canonical_job_id": row["canonical_job_id"],
+        "hard_status": row["hard_status"],
+        "title": row["title"],
+        "location_raw": row["location_raw"],
+    }
+    flag, codes = evaluate_structural(
+        job,
+        company_display_name=_company_display_name(conn, company_id),
+        peers=_legitimacy_peers(conn, job_id, desc_hash),
+    )
+    conn.execute(
+        """
+        UPDATE jobs
+        SET legitimacy_flag = ?, legitimacy_reasons_json = ?
+        WHERE id = ?
+        """,
+        (flag, json.dumps(codes, separators=(",", ":")), int(job_id)),
+    )
+
+
 def upsert_job(
     conn: Conn,
     profile: Profile,
@@ -344,28 +801,51 @@ def upsert_job(
     raw_json: str,
     ats: str,
     employment_hint: str | None = None,
+    workplace_hint: str | None = None,
+    posted_at: datetime | str | None = None,
 ) -> tuple[str, int | None]:
     col_url, norm = job_identity(apply_url, hosted_url, source, external_id)
     if norm is None:
         return "skip", None
+    employment_hint = _sanitize_hint(employment_hint)
+    workplace_hint = _sanitize_hint(workplace_hint)
+    posted_at_store = _store_posted_at(posted_at)
+    raw_title = (title or "").strip() or "(untitled)"
+    raw_company = (company or "").strip()
     status, reason = hard_filter(
         profile,
-        title=title,
+        title=raw_title,
         location_raw=location_raw,
         description_text=description_text,
         employment_hint=employment_hint,
     )
     now = utc_now()
     ext_store = (external_id or "").strip() or None
-    job_title = (title or "").strip() or "(untitled)"
+    job_title = normalize_title(raw_title) or "(untitled)"
+    job_company = normalize_company(raw_company) if raw_company else raw_company
+    desc_hash = description_hash(description_text)
+    identity_key = posting_key(job_title, job_company, location_raw or "")
     existing = lookup_job(conn, norm, source, external_id)
     if existing is not None:
+        prev = conn.execute(
+            "SELECT description_hash FROM jobs WHERE id = ?",
+            (existing,),
+        ).fetchone()
+        old_hash = ""
+        if prev is not None:
+            try:
+                old_hash = str(prev["description_hash"] or "")
+            except (KeyError, IndexError, TypeError):
+                old_hash = ""
         conn.execute(
             """
             UPDATE jobs
             SET apply_url = ?,
                 last_seen_at = ?,
                 is_active = 1,
+                miss_count = 0,
+                closed_at = NULL,
+                close_reason = NULL,
                 title = ?,
                 location_raw = ?,
                 description_text = ?,
@@ -375,7 +855,14 @@ def upsert_job(
                 company = ?,
                 company_id = ?,
                 ats = ?,
-                external_id = ?
+                external_id = ?,
+                employment_hint = ?,
+                workplace_hint = ?,
+                description_hash = ?,
+                raw_title = ?,
+                raw_company = ?,
+                posting_key = ?,
+                posted_at = ?
             WHERE id = ?
             """,
             (
@@ -387,13 +874,24 @@ def upsert_job(
                 raw_json,
                 status,
                 reason,
-                company,
+                job_company,
                 company_id,
                 ats,
                 ext_store,
+                employment_hint,
+                workplace_hint,
+                desc_hash,
+                raw_title,
+                raw_company,
+                identity_key,
+                posted_at_store,
                 existing,
             ),
         )
+        if old_hash and old_hash != desc_hash:
+            mark_scores_stale(conn, existing)
+        link_duplicate_jobs(conn, existing)
+        _stamp_legitimacy(conn, existing)
         conn.commit()
         return "update", existing
     cur = conn.execute(
@@ -401,8 +899,10 @@ def upsert_job(
         INSERT INTO jobs (
           apply_url, apply_url_norm, source, external_id, company_id, company,
           title, location_raw, description_text, raw_json,
-          first_seen_at, last_seen_at, is_active, hard_status, hard_reason, ats
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+          first_seen_at, last_seen_at, is_active, hard_status, hard_reason, ats,
+          miss_count, closed_at, close_reason, employment_hint, workplace_hint,
+          description_hash, raw_title, raw_company, posting_key, posted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 0, NULL, NULL, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             col_url,
@@ -410,7 +910,7 @@ def upsert_job(
             source,
             ext_store,
             company_id,
-            company,
+            job_company,
             job_title,
             location_raw,
             description_text,
@@ -420,10 +920,96 @@ def upsert_job(
             status,
             reason,
             ats,
+            employment_hint,
+            workplace_hint,
+            desc_hash,
+            raw_title,
+            raw_company,
+            identity_key,
+            posted_at_store,
         ),
     )
+    new_id = int(cur.lastrowid)
+    link_duplicate_jobs(conn, new_id)
+    _stamp_legitimacy(conn, new_id)
     conn.commit()
-    return "insert", int(cur.lastrowid)
+    return "insert", new_id
+
+
+def job_seen_key(*, external_id: str | None, apply_url_norm: str | None) -> str | None:
+    ext = (external_id or "").strip()
+    if ext:
+        return ext
+    norm = (apply_url_norm or "").strip()
+    return norm or None
+
+
+def note_seen_job(conn: Conn, job_id: int) -> None:
+    conn.execute(
+        """
+        UPDATE jobs
+        SET is_active = 1,
+            miss_count = 0,
+            closed_at = NULL,
+            close_reason = NULL
+        WHERE id = ?
+        """,
+        (int(job_id),),
+    )
+    conn.commit()
+
+
+def bump_unseen_for_source(
+    conn: Conn,
+    source: str,
+    seen_keys: set[str] | frozenset[str],
+    *,
+    success: bool,
+) -> dict[str, int]:
+    if not success:
+        return {"missed": 0, "tombstoned": 0}
+    source_s = (source or "").strip()
+    if not source_s:
+        return {"missed": 0, "tombstoned": 0}
+    rows = conn.execute(
+        """
+        SELECT id, external_id, apply_url_norm, miss_count
+        FROM jobs
+        WHERE source = ? AND is_active = 1
+        """,
+        (source_s,),
+    ).fetchall()
+    missed = 0
+    tombstoned = 0
+    now = utc_now()
+    seen = set(seen_keys)
+    for row in rows:
+        key = job_seen_key(
+            external_id=row["external_id"],
+            apply_url_norm=row["apply_url_norm"],
+        )
+        if key is None or key in seen:
+            continue
+        missed += 1
+        new_miss = int(row["miss_count"] or 0) + 1
+        if new_miss >= 2:
+            conn.execute(
+                """
+                UPDATE jobs
+                SET miss_count = ?, is_active = 0, closed_at = ?, close_reason = ?
+                WHERE id = ?
+                """,
+                (new_miss, now, "unseen_board", int(row["id"])),
+            )
+            tombstoned += 1
+        else:
+            conn.execute(
+                "UPDATE jobs SET miss_count = ? WHERE id = ?",
+                (new_miss, int(row["id"])),
+            )
+    if missed:
+        conn.commit()
+    return {"missed": missed, "tombstoned": tombstoned}
 
 
 def insert_run(conn: Conn, kind: str, status: str = "running") -> int:
@@ -523,15 +1109,24 @@ def unscored_pass_jobs(
         FROM jobs
         WHERE jobs.hard_status = 'pass'
           AND jobs.is_active = 1
+          AND jobs.canonical_job_id IS NULL
           AND NOT EXISTS (
             SELECT 1 FROM scores
             WHERE scores.job_id = jobs.id
               AND scores.model = ?
               AND scores.prompt_version = ?
+              AND scores.stale = 0
           )
           AND NOT EXISTS (
             SELECT 1 FROM applications
             WHERE applications.apply_url_norm = jobs.apply_url_norm
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM applications a
+            JOIN jobs j2 ON j2.apply_url_norm = a.apply_url_norm
+            WHERE jobs.posting_key IS NOT NULL
+              AND jobs.posting_key != ''
+              AND j2.posting_key = jobs.posting_key
           )
         ORDER BY jobs.id ASC
         """,
@@ -551,13 +1146,14 @@ def upsert_score(
     conn.execute(
         """
         INSERT INTO scores (
-          job_id, model, prompt_version, relevant, score, reasons_json, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+          job_id, model, prompt_version, relevant, score, reasons_json, created_at, stale
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 0)
         ON CONFLICT(job_id, model, prompt_version) DO UPDATE SET
           relevant = excluded.relevant,
           score = excluded.score,
           reasons_json = excluded.reasons_json,
-          created_at = excluded.created_at
+          created_at = excluded.created_at,
+          stale = 0
         """,
         (
             job_id,
@@ -572,57 +1168,299 @@ def upsert_score(
     conn.commit()
 
 
-def guest_rows(
+def last_ok_run(conn: Conn, kind: str) -> RowLike | None:
+    return conn.execute(
+        """
+        SELECT *
+        FROM runs
+        WHERE kind = ? AND status = 'ok'
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (kind,),
+    ).fetchone()
+
+
+def last_digest_job_ids(conn: Conn) -> list[int]:
+    row = last_ok_run(conn, "digest")
+    if row is None:
+        return []
+    raw = row["stats_json"]
+    if not raw:
+        return []
+    try:
+        stats = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return []
+    if not isinstance(stats, dict):
+        return []
+    ids = stats.get("job_ids")
+    if not isinstance(ids, list):
+        return []
+    out: list[int] = []
+    for item in ids:
+        try:
+            jid = int(item)
+        except (TypeError, ValueError):
+            continue
+        if jid > 0:
+            out.append(jid)
+    return out
+
+
+def upsert_contact(
+    conn: Conn,
+    *,
+    job_id: int | None,
+    company: str,
+    name: str,
+    source: str,
+    email: str | None = None,
+    role: str | None = None,
+    domain: str | None = None,
+    confidence: float | None = None,
+) -> tuple[str, int | None]:
+    src = (source or "").strip()
+    if src not in _CONTACT_SOURCES:
+        return ("skip", None)
+    name_s = collapse_ws(name)
+    if not name_s:
+        return ("skip", None)
+    if job_id is None:
+        return ("skip", None)
+    company_s = normalize_company(company) or collapse_ws(company)
+    if not company_s:
+        company_s = collapse_ws(company) or "unknown"
+    email_s = collapse_ws(email).lower() or None
+    role_s = collapse_ws(role) or None
+    domain_s = collapse_ws(domain).lower() or None
+    conf = float(confidence) if confidence is not None else None
+    existing = conn.execute(
+        """
+        SELECT id, confidence, email, role, domain FROM contacts
+        WHERE job_id = ? AND name = ? AND source = ?
+        """,
+        (int(job_id), name_s, src),
+    ).fetchone()
+    if existing is not None:
+        cid = int(existing["id"])
+        old_conf = existing["confidence"]
+        keep_conf = conf
+        if old_conf is not None:
+            try:
+                old_f = float(old_conf)
+            except (TypeError, ValueError):
+                old_f = None
+            else:
+                if keep_conf is None or old_f > keep_conf:
+                    keep_conf = old_f
+        if email_s is None:
+            email_s = existing["email"]
+        if role_s is None:
+            role_s = existing["role"]
+        if domain_s is None:
+            domain_s = existing["domain"]
+        conn.execute(
+            """
+            UPDATE contacts
+            SET company = ?, domain = ?, email = ?, role = ?, confidence = ?
+            WHERE id = ?
+            """,
+            (company_s, domain_s, email_s, role_s, keep_conf, cid),
+        )
+        conn.commit()
+        return ("update", cid)
+    cur = conn.execute(
+        """
+        INSERT INTO contacts (
+          job_id, company, domain, name, email, role, source, verified,
+          confidence, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'unverified', ?, ?)
+        """,
+        (
+            int(job_id),
+            company_s,
+            domain_s,
+            name_s,
+            email_s,
+            role_s,
+            src,
+            conf,
+            utc_now(),
+        ),
+    )
+    conn.commit()
+    return ("insert", int(cur.lastrowid))
+
+
+def contacts_for_job(conn: Conn, job_id: int) -> list[RowLike]:
+    return conn.execute(
+        """
+        SELECT *
+        FROM contacts
+        WHERE job_id = ?
+        ORDER BY
+          CASE WHEN email IS NOT NULL AND email != '' THEN 0 ELSE 1 END,
+          CASE source WHEN 'jd' THEN 0 WHEN 'github' THEN 1 ELSE 2 END,
+          CASE WHEN confidence IS NULL THEN 1 ELSE 0 END,
+          confidence DESC,
+          created_at DESC,
+          id DESC
+        """,
+        (int(job_id),),
+    ).fetchall()
+
+
+def best_contact_for_job(conn: Conn, job_id: int) -> RowLike | None:
+    rows = contacts_for_job(conn, job_id)
+    return rows[0] if rows else None
+
+
+def _relevant_unapplied_select(
     conn: Conn,
     model: str,
     prompt_version: str,
-    digest_max: int,
 ) -> list[RowLike]:
-    limit = max(int(digest_max), 0)
     return conn.execute(
         """
-        SELECT jobs.*, scores.score AS score, scores.reasons_json AS reasons_json
+        SELECT jobs.*, scores.score AS score, scores.reasons_json AS reasons_json,
+               companies.display_name AS display_name
         FROM jobs
         JOIN scores ON scores.job_id = jobs.id
-        WHERE scores.relevant = 1
+        LEFT JOIN companies ON companies.id = jobs.company_id
+        WHERE jobs.hard_status = 'pass'
+          AND jobs.is_active = 1
+          AND jobs.canonical_job_id IS NULL
+          AND scores.relevant = 1
+          AND scores.stale = 0
           AND scores.model = ?
           AND scores.prompt_version = ?
           AND NOT EXISTS (
             SELECT 1 FROM applications
             WHERE applications.apply_url_norm = jobs.apply_url_norm
           )
-        ORDER BY scores.score DESC, jobs.id ASC
-        LIMIT ?
+          AND NOT EXISTS (
+            SELECT 1 FROM applications a
+            JOIN jobs j2 ON j2.apply_url_norm = a.apply_url_norm
+            WHERE jobs.posting_key IS NOT NULL
+              AND jobs.posting_key != ''
+              AND j2.posting_key = jobs.posting_key
+          )
         """,
-        (model, prompt_version, limit),
+        (model, prompt_version),
     ).fetchall()
+
+
+def _row_notified_at(row: RowLike) -> str | None:
+    try:
+        value = row["notified_at"]
+    except (KeyError, IndexError, TypeError):
+        return None
+    return value
+
+
+MIN_OUTCOMES = 20
+OUTCOME = frozenset({"oa", "interview", "offer", "rejected", "ghosted"})
+_PRIOR_POSITIVE_STATUSES = frozenset({"oa", "interview", "offer"})
+
+
+def _company_key(name: Any) -> str:
+    return normalize_company(name).casefold()
+
+
+def load_company_priors(conn: Conn) -> dict[str, float]:
+    rows = conn.execute(
+        """
+        SELECT
+          applications.status AS status,
+          applications.company AS app_company,
+          applications.job_id AS job_id,
+          jobs.company AS job_company,
+          jobs.company_id AS company_id,
+          companies.display_name AS display_name
+        FROM applications
+        LEFT JOIN jobs ON jobs.id = applications.job_id
+        LEFT JOIN companies ON companies.id = jobs.company_id
+        WHERE applications.status IN ('oa', 'interview', 'offer', 'rejected', 'ghosted')
+        """
+    ).fetchall()
+    if len(rows) < MIN_OUTCOMES:
+        return {}
+
+    positive_keys: set[str] = set()
+    for row in rows:
+        status = str(row["status"] or "").strip().lower()
+        if status not in OUTCOME:
+            continue
+        job_id = row["job_id"]
+        job_company = str(row["job_company"] or "").strip() if job_id is not None else ""
+        if job_id is not None and job_company:
+            key = _company_key(job_company)
+        else:
+            key = _company_key(row["app_company"])
+        keys: list[str] = []
+        if key:
+            keys.append(key)
+        if row["company_id"] is not None:
+            display_key = _company_key(row["display_name"])
+            if display_key and display_key not in keys:
+                keys.append(display_key)
+        if status not in _PRIOR_POSITIVE_STATUSES:
+            continue
+        positive_keys.update(keys)
+    return {key: float(PRIOR_POSITIVE) for key in positive_keys}
+
+
+def guest_rows(
+    conn: Conn,
+    model: str,
+    prompt_version: str,
+    digest_max: int,
+    *,
+    profile: Profile,
+    now: datetime | None = None,
+) -> list[RowLike]:
+    when = now or datetime.now(timezone.utc)
+    rows = _relevant_unapplied_select(conn, model, prompt_version)
+    rows = [
+        row
+        for row in rows
+        if not str(_row_notified_at(row) or "").strip()
+    ]
+    priors = load_company_priors(conn)
+    ranked = sort_rows(
+        rows,
+        home=profile.location,
+        relocate=profile.relocate,
+        now=when,
+        priors=priors,
+    )
+    limit = max(int(digest_max), 0)
+    return ranked[:limit]
 
 
 def relevant_unapplied_jobs(
     conn: Conn,
     model: str,
     prompt_version: str,
+    *,
+    profile: Profile,
+    now: datetime | None = None,
 ) -> list[RowLike]:
-    return conn.execute(
-        """
-        SELECT jobs.*, scores.score AS score, scores.reasons_json AS reasons_json
-        FROM jobs
-        JOIN scores ON scores.job_id = jobs.id
-        WHERE scores.relevant = 1
-          AND scores.model = ?
-          AND scores.prompt_version = ?
-          AND NOT EXISTS (
-            SELECT 1 FROM applications
-            WHERE applications.apply_url_norm = jobs.apply_url_norm
-          )
-        ORDER BY scores.score DESC, jobs.id ASC
-        """,
-        (model, prompt_version),
-    ).fetchall()
+    when = now or datetime.now(timezone.utc)
+    rows = _relevant_unapplied_select(conn, model, prompt_version)
+    priors = load_company_priors(conn)
+    return sort_rows(
+        rows,
+        home=profile.location,
+        relocate=profile.relocate,
+        now=when,
+        priors=priors,
+    )
 
 
 _APP_STATUSES = frozenset(
-    {"applied", "oa", "interview", "offer", "rejected", "ghosted"}
+    {"applied", "oa", "interview", "offer", "rejected", "ghosted", "saved", "hidden"}
 )
 
 
@@ -671,21 +1509,115 @@ def upsert_application(
             source_s = str(job_row["source"] or "")
 
     existing = conn.execute(
-        "SELECT id FROM applications WHERE apply_url_norm = ?",
+        "SELECT id, status FROM applications WHERE apply_url_norm = ?",
         (norm,),
     ).fetchone()
     if existing is not None:
         app_id = int(existing["id"])
-        conn.execute(
-            """
-            UPDATE applications
-            SET company = ?, title = ?, status = ?, notes = ?, source = ?, job_id = ?
-            WHERE id = ?
-            """,
-            (company_s, title_s, st, notes_s, source_s, resolved_job_id, app_id),
-        )
+        prev = str(existing["status"] or "").strip().lower()
+        entering_applied = st == "applied" and prev != "applied"
+        if entering_applied:
+            conn.execute(
+                """
+                UPDATE applications
+                SET company = ?, title = ?, status = ?, notes = ?, source = ?,
+                    job_id = ?, applied_on = ?
+                WHERE id = ?
+                """,
+                (
+                    company_s,
+                    title_s,
+                    st,
+                    notes_s,
+                    source_s,
+                    resolved_job_id,
+                    utc_now(),
+                    app_id,
+                ),
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE applications
+                SET company = ?, title = ?, status = ?, notes = ?, source = ?, job_id = ?
+                WHERE id = ?
+                """,
+                (company_s, title_s, st, notes_s, source_s, resolved_job_id, app_id),
+            )
         conn.commit()
         return "update", app_id
+    cur = conn.execute(
+        """
+        INSERT INTO applications (
+          job_id, apply_url_norm, company, title, applied_on, status, source, notes
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            resolved_job_id,
+            norm,
+            company_s,
+            title_s,
+            utc_now(),
+            st,
+            source_s,
+            notes_s,
+        ),
+    )
+    conn.commit()
+    return "insert", int(cur.lastrowid)
+
+
+def ensure_application(
+    conn: Conn,
+    *,
+    apply_url: str,
+    company: str = "",
+    title: str = "",
+    status: str = "saved",
+    notes: str = "",
+    source: str = "",
+    job_id: int | None = None,
+) -> tuple[str, int | None]:
+    raw = (apply_url or "").strip()
+    if not (
+        raw.lower().startswith("http://") or raw.lower().startswith("https://")
+    ):
+        return "skip", None
+    norm = normalize_url(raw)
+    if not (
+        norm.lower().startswith("http://") or norm.lower().startswith("https://")
+    ):
+        return "skip", None
+    st = (status or "saved").strip().lower()
+    if st not in _APP_STATUSES:
+        return "skip", None
+
+    existing = conn.execute(
+        "SELECT id FROM applications WHERE apply_url_norm = ?",
+        (norm,),
+    ).fetchone()
+    if existing is not None:
+        return "exists", int(existing["id"])
+
+    job_row = conn.execute(
+        "SELECT id, company, title, source FROM jobs WHERE apply_url_norm = ?",
+        (norm,),
+    ).fetchone()
+    resolved_job_id = job_id
+    company_s = (company or "").strip()
+    title_s = (title or "").strip()
+    source_s = (source or "").strip()
+    notes_s = notes or ""
+    if job_row is not None:
+        if resolved_job_id is None:
+            resolved_job_id = int(job_row["id"])
+        if not company_s:
+            company_s = str(job_row["company"] or "")
+        if not title_s:
+            title_s = str(job_row["title"] or "")
+        if not source_s:
+            source_s = str(job_row["source"] or "")
+
     cur = conn.execute(
         """
         INSERT INTO applications (
@@ -727,3 +1659,149 @@ def mark_sheet_synced(
         (int(sheet_row), utc_now(), int(application_id)),
     )
     conn.commit()
+
+
+_BOT_STATUSES = frozenset({"saved", "hidden", "applied"})
+_PROTECTED_APP = frozenset({"oa", "interview", "offer"})
+
+
+def job_score_row(
+    conn: Conn, job_id: int, model: str, prompt_version: str
+) -> RowLike | None:
+    return conn.execute(
+        """
+        SELECT jobs.*, scores.score AS score, scores.reasons_json AS reasons_json
+        FROM jobs
+        LEFT JOIN scores
+          ON scores.job_id = jobs.id
+         AND scores.model = ?
+         AND scores.prompt_version = ?
+        WHERE jobs.id = ?
+        """,
+        (model, prompt_version, int(job_id)),
+    ).fetchone()
+
+
+def apply_bot_status(conn: Conn, job_id: int, status: str) -> str:
+    st = (status or "").strip().lower()
+    if st not in _BOT_STATUSES:
+        return "skip"
+    job = conn.execute(
+        """
+        SELECT id, apply_url, apply_url_norm, company, title, source
+        FROM jobs
+        WHERE id = ?
+        """,
+        (int(job_id),),
+    ).fetchone()
+    if job is None:
+        return "missing"
+    raw = str(job["apply_url"] or "").strip()
+    if not (
+        raw.lower().startswith("http://") or raw.lower().startswith("https://")
+    ):
+        return "skip"
+    norm = normalize_url(raw)
+    if not (
+        norm.lower().startswith("http://") or norm.lower().startswith("https://")
+    ):
+        return "skip"
+    company_s = str(job["company"] or "")
+    title_s = str(job["title"] or "")
+    source_s = str(job["source"] or "")
+    resolved_job_id = int(job["id"])
+    existing = conn.execute(
+        "SELECT id, status FROM applications WHERE apply_url_norm = ?",
+        (norm,),
+    ).fetchone()
+    now = utc_now()
+    if existing is not None:
+        cur = str(existing["status"] or "").strip().lower()
+        if cur in _PROTECTED_APP:
+            return "skip"
+        app_id = int(existing["id"])
+        entering_applied = st == "applied" and cur != "applied"
+        if entering_applied:
+            conn.execute(
+                """
+                UPDATE applications
+                SET company = ?, title = ?, status = ?, source = ?, job_id = ?,
+                    applied_on = ?
+                WHERE id = ?
+                """,
+                (
+                    company_s,
+                    title_s,
+                    st,
+                    source_s,
+                    resolved_job_id,
+                    now,
+                    app_id,
+                ),
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE applications
+                SET company = ?, title = ?, status = ?, source = ?, job_id = ?
+                WHERE id = ?
+                """,
+                (company_s, title_s, st, source_s, resolved_job_id, app_id),
+            )
+        conn.commit()
+        return "ok"
+    conn.execute(
+        """
+        INSERT INTO applications (
+          job_id, apply_url_norm, company, title, applied_on, status, source, notes
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            resolved_job_id,
+            norm,
+            company_s,
+            title_s,
+            now,
+            st,
+            source_s,
+            "",
+        ),
+    )
+    conn.commit()
+    return "ok"
+
+
+_NOTIFY_KINDS = frozenset({"urgent", "digest"})
+
+
+def stamp_notified(conn: Conn, job_id: int, kind: str) -> None:
+    notify_kind = kind if kind in _NOTIFY_KINDS else "digest"
+    conn.execute(
+        """
+        UPDATE jobs
+        SET notified_at = ?, notify_kind = ?
+        WHERE id = ?
+        """,
+        (utc_now(), notify_kind, int(job_id)),
+    )
+    conn.commit()
+
+
+def urgent_sent_count(conn: Conn, now: datetime) -> int:
+    from jobdigest.followups import ist_date, parse_iso
+
+    day = ist_date(now)
+    rows = conn.execute(
+        """
+        SELECT notified_at
+        FROM jobs
+        WHERE notify_kind = 'urgent'
+          AND notified_at IS NOT NULL
+        """
+    ).fetchall()
+    n = 0
+    for row in rows:
+        dt = parse_iso(row["notified_at"])
+        if dt is not None and ist_date(dt) == day:
+            n += 1
+    return n

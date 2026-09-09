@@ -27,13 +27,19 @@ def _is_gh_jobs(request: httpx.Request) -> bool:
 
 
 def test_two_jobs_ok():
+    calls = {"n": 0}
+
     def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        assert request.url.params.get("page") is None
         if _is_gh_jobs(request):
             return httpx.Response(200, json=_load("two_jobs.json"))
         return httpx.Response(500, text="unexpected")
 
     result = _fetch(handler)
     assert result.status is FetchStatus.OK
+    assert result.complete is True
+    assert calls["n"] == 1
     assert len(result.jobs) == 2
     intern = result.jobs[0]
     assert intern.title == "Software Engineer Intern"
@@ -45,6 +51,10 @@ def test_two_jobs_ok():
     assert intern.ats == "greenhouse"
     assert intern.source == "example"
     assert intern.external_id == "101"
+    assert intern.employment_hint is None
+    assert intern.workplace_hint is None
+    assert intern.posted_at == "2024-06-01T00:00:00Z"
+    assert result.jobs[1].posted_at is None
 
 
 def test_empty_board():
@@ -55,6 +65,7 @@ def test_empty_board():
 
     result = _fetch(handler)
     assert result.status is FetchStatus.EMPTY_BOARD
+    assert result.complete is True
     assert result.jobs == []
     assert result.http_status == 200
 
@@ -125,6 +136,27 @@ def test_403_is_error_not_dead_token():
     assert result.http_status == 403
 
 
+def test_offices_parent_name_not_in_location():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if _is_gh_jobs(request):
+            return httpx.Response(200, json=_load("offices_parent_vs_leaf.json"))
+        return httpx.Response(500, text="unexpected")
+
+    result = _fetch(handler)
+    assert result.status is FetchStatus.OK
+    by_id = {job.external_id: job for job in result.jobs}
+    parent = by_id["579"]
+    intern = by_id["581"]
+    perm = by_id["572"]
+    assert parent.location_raw == ""
+    assert "India Locations" not in parent.location_raw
+    assert "N/A" not in parent.location_raw
+    assert intern.location_raw == "Bengaluru | Bengaluru, Karnataka, India"
+    assert "IN-Bengaluru" not in intern.location_raw
+    assert perm.location_raw == "Seattle, WA"
+    assert "US-PERM" not in perm.location_raw
+
+
 def test_200_html_challenge_is_error():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -136,3 +168,98 @@ def test_200_html_challenge_is_error():
     result = _fetch(handler)
     assert result.status is FetchStatus.ERROR
     assert result.jobs == []
+
+
+def test_meta_total_mismatch_duplicate_page_is_incomplete(caplog):
+    payload = _load("two_jobs.json")
+    payload["meta"]["total"] = 5
+    urls: list[str] = []
+    caplog.set_level("WARNING")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        urls.append(str(request.url))
+        if _is_gh_jobs(request):
+            return httpx.Response(200, json=payload)
+        return httpx.Response(500, text="unexpected")
+
+    result = _fetch(handler)
+    assert result.status is FetchStatus.OK
+    assert result.complete is False
+    assert [job.external_id for job in result.jobs] == ["101", "102"]
+    assert len(urls) == 2
+    assert "page=2" in urls[1]
+    assert all("page=3" not in url for url in urls)
+    assert "greenhouse incomplete" in caplog.text
+    assert "total=5" in caplog.text
+    assert "got=2" in caplog.text
+
+
+def test_meta_total_mismatch_second_page_appends():
+    page1 = _load("two_jobs.json")
+    page1["meta"]["total"] = 3
+    page2 = _load("page2_new.json")
+    urls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        urls.append(str(request.url))
+        if not _is_gh_jobs(request):
+            return httpx.Response(500, text="unexpected")
+        page = request.url.params.get("page")
+        if page is None:
+            return httpx.Response(200, json=page1)
+        if page == "2":
+            return httpx.Response(200, json=page2)
+        return httpx.Response(500, text="no further pages")
+
+    result = _fetch(handler)
+    assert result.status is FetchStatus.OK
+    assert result.complete is True
+    assert [job.external_id for job in result.jobs] == ["101", "102", "103"]
+    assert result.jobs[2].title == "New Grad Software Engineer"
+    assert len(urls) == 2
+
+
+def test_page2_http_error_keeps_page1_incomplete():
+    page1 = _load("two_jobs.json")
+    page1["meta"]["total"] = 5
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.params.get("page"):
+            return httpx.Response(500, json={"error": "fail"})
+        if _is_gh_jobs(request):
+            return httpx.Response(200, json=page1)
+        return httpx.Response(500, text="unexpected")
+
+    result = _fetch(handler)
+    assert result.status is FetchStatus.OK
+    assert result.complete is False
+    assert [job.external_id for job in result.jobs] == ["101", "102"]
+
+
+def test_max_pages_marks_incomplete():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raw_page = request.url.params.get("page") or "1"
+        jid = 200 + int(raw_page)
+        body = {
+            "jobs": [
+                {
+                    "id": jid,
+                    "title": "Software Engineer Intern",
+                    "absolute_url": f"https://boards.greenhouse.io/example/jobs/{jid}",
+                    "location": {"name": "Pune, India"},
+                    "content": "Intern role in Pune",
+                    "company_name": "Example Corp",
+                }
+            ],
+            "meta": {"total": 50},
+        }
+        return httpx.Response(200, json=body)
+
+    transport = httpx.MockTransport(handler)
+    with httpx.Client(transport=transport) as client:
+        result = GreenhouseAdapter(client, sleep=lambda _: None, max_pages=3).fetch(
+            COMPANY
+        )
+    assert result.status is FetchStatus.OK
+    assert result.complete is False
+    assert [job.external_id for job in result.jobs] == ["201", "202", "203"]

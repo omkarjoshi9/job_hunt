@@ -1,9 +1,12 @@
 import json
 import re
 
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
 from jobdigest.config import load_profile
-from jobdigest.db import connect, insert_run, finish_run, upsert_job
-from jobdigest.digest import run
+from jobdigest.db import connect, finish_run, insert_run, last_digest_job_ids, upsert_job, upsert_score
+from jobdigest.digest import _guest_dicts, run
 from jobdigest.openrouter import OpenRouterError
 
 
@@ -144,8 +147,16 @@ def test_digest_three_relevant_not_junk(tmp_path, capsys):
     assert "Acme" in captured.out
     assert "Globex" in captured.out
     assert "Initech" in captured.out
+    assert "Why you:" in captured.out
     for title in junk_titles:
         assert title not in captured.out
+    conn = connect(db)
+    try:
+        stored = last_digest_job_ids(conn)
+    finally:
+        conn.close()
+    assert stored
+    assert set(stored) <= relevant_ids
 
 
 def test_digest_zero_pass_jobs_silent(tmp_path, capsys):
@@ -163,3 +174,160 @@ def test_digest_zero_pass_jobs_silent(tmp_path, capsys):
     captured = capsys.readouterr()
     assert code == 0
     assert captured.out == ""
+    conn = connect(db)
+    try:
+        assert last_digest_job_ids(conn) == []
+    finally:
+        conn.close()
+
+
+def test_guest_dicts_keeps_why_and_chips(tmp_path):
+    db = tmp_path / "jobs.db"
+    conn = connect(db)
+    profile = load_profile()
+    now = datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc)
+    try:
+        jid = _pass_job(
+            conn,
+            profile,
+            url="https://example.com/jobs/why-1",
+            ext="why-1",
+            title="Software Engineer Intern",
+            company="Acme",
+        )
+        upsert_score(
+            conn,
+            jid,
+            "m",
+            "v",
+            True,
+            91.0,
+            {
+                "why": "intern python",
+                "stack_ok": True,
+                "level_ok": True,
+                "location_ok": True,
+                "kill": None,
+            },
+        )
+        row = conn.execute(
+            """
+            SELECT jobs.*, scores.score AS score, scores.reasons_json AS reasons_json
+            FROM jobs
+            JOIN scores ON scores.job_id = jobs.id
+            """
+        ).fetchone()
+        guest = _guest_dicts([row], now=now)
+    finally:
+        conn.close()
+    assert guest[0]["why"] == "intern python"
+    assert guest[0]["source_chip"] == "ats"
+    assert guest[0]["score"] == 91.0
+
+
+def test_guest_dicts_gap_location(tmp_path):
+    db = tmp_path / "jobs.db"
+    conn = connect(db)
+    profile = load_profile()
+    now = datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc)
+    try:
+        jid = _pass_job(
+            conn,
+            profile,
+            url="https://example.com/jobs/gap-1",
+            ext="gap-1",
+            title="Software Engineer Intern",
+            company="Acme",
+        )
+        upsert_score(
+            conn,
+            jid,
+            "m",
+            "v",
+            True,
+            80.0,
+            {
+                "why": "intern python",
+                "stack_ok": True,
+                "level_ok": True,
+                "location_ok": False,
+                "kill": None,
+            },
+        )
+        row = conn.execute(
+            """
+            SELECT jobs.*, scores.score AS score, scores.reasons_json AS reasons_json
+            FROM jobs
+            JOIN scores ON scores.job_id = jobs.id
+            """
+        ).fetchone()
+        guest = _guest_dicts([row], now=now)
+    finally:
+        conn.close()
+    assert "location" in guest[0]["gap_labels"]
+    assert guest[0]["location_ok"] is False
+
+
+def test_guest_dicts_age_overlay_sets_chip(tmp_path):
+    db = tmp_path / "jobs.db"
+    conn = connect(db)
+    profile = load_profile()
+    now = datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc)
+    old = (now - timedelta(days=91)).replace(microsecond=0).isoformat().replace(
+        "+00:00", "Z"
+    )
+    try:
+        jid = _pass_job(
+            conn,
+            profile,
+            url="https://example.com/jobs/age-91",
+            ext="age-91",
+            title="Software Engineer Intern",
+            company="Acme",
+        )
+        conn.execute(
+            """
+            UPDATE jobs
+            SET first_seen_at = ?, legitimacy_flag = ?, legitimacy_reasons_json = ?
+            WHERE id = ?
+            """,
+            (old, "ok", "[]", jid),
+        )
+        conn.commit()
+        upsert_score(
+            conn,
+            jid,
+            "m",
+            "v",
+            True,
+            91.0,
+            {
+                "why": "intern python",
+                "stack_ok": True,
+                "level_ok": True,
+                "location_ok": True,
+                "kill": None,
+            },
+        )
+        row = conn.execute(
+            """
+            SELECT jobs.*, scores.score AS score, scores.reasons_json AS reasons_json
+            FROM jobs
+            JOIN scores ON scores.job_id = jobs.id
+            """
+        ).fetchone()
+        guest = _guest_dicts([row], now=now)
+    finally:
+        conn.close()
+    assert guest[0]["legitimacy_flag"] == "suspect"
+    assert guest[0]["legitimacy_chip"] == "suspect:90d"
+
+
+def test_digest_source_does_not_import_blurb():
+    root = Path(__file__).resolve().parents[1] / "src" / "jobdigest"
+    digest = (root / "digest.py").read_text(encoding="utf-8")
+    score = (root / "score.py").read_text(encoding="utf-8")
+    assert "jobdigest.blurb" not in digest
+    assert "draft_blurb" not in digest
+    assert "jobdigest.contacts" not in digest
+    assert "draft_blurb" not in score

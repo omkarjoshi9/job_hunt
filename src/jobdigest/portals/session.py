@@ -169,6 +169,7 @@ def get_html(
     last_host: dict,
     fetch: str = FETCH_HTTP,
     solve_cloudflare: bool = False,
+    extra_headers: dict | None = None,
 ) -> tuple[int, str, Any]:
     """Return (http_status, html_text, page). Rate-limit by hostname."""
     host = (urlsplit(url).hostname or "").lower()
@@ -176,10 +177,13 @@ def get_html(
     if prev and prev == host:
         sleep(HOST_SLEEP_S)
     last_host["host"] = host
+    headers = {"User-Agent": UA}
+    if extra_headers:
+        headers.update(extra_headers)
     mode = (fetch or FETCH_HTTP).strip().lower() or FETCH_HTTP
     if mode in {FETCH_DYNAMIC, FETCH_STEALTH}:
         kwargs: dict[str, Any] = {
-            "extra_headers": {"User-Agent": UA},
+            "extra_headers": headers,
             "google_search": False,
         }
         if mode == FETCH_STEALTH:
@@ -188,7 +192,7 @@ def get_html(
     else:
         page = session.get(
             url,
-            headers={"User-Agent": UA},
+            headers=headers,
             stealthy_headers=False,
         )
     status = int(getattr(page, "status", 0) or 0)

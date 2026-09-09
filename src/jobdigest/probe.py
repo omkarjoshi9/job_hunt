@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import time
 from collections.abc import Callable, Sequence
 
@@ -10,7 +11,38 @@ from jobdigest.ats.base import CompanyConfig
 from jobdigest.ats.http_client import make_client
 from jobdigest.config import load_companies
 
-_KNOWN = frozenset({"greenhouse", "lever", "ashby", "workable"})
+_KNOWN = frozenset(
+    {"greenhouse", "lever", "ashby", "workable", "smartrecruiters", "bamboohr"}
+)
+
+
+def _parse_ids(raw: list[str] | None) -> set[str] | None:
+    if not raw:
+        return None
+    ids: set[str] = set()
+    for chunk in raw:
+        for part in str(chunk).split(","):
+            key = part.strip()
+            if key:
+                ids.add(key)
+    return ids or None
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="python -m jobdigest.probe")
+    parser.add_argument(
+        "--ids",
+        action="append",
+        default=None,
+        metavar="ID",
+        help="only probe these company ids (repeatable or comma-separated)",
+    )
+    parser.add_argument(
+        "--enabled-only",
+        action="store_true",
+        help="only probe companies with enabled: true",
+    )
+    return parser
 
 
 def main(
@@ -18,7 +50,9 @@ def main(
     client: httpx.Client | None = None,
     sleep: Callable[[float], None] | None = None,
 ) -> int:
-    _ = argv
+    args = _build_parser().parse_args(list(argv) if argv is not None else None)
+    want_ids = _parse_ids(args.ids)
+    enabled_only = bool(args.enabled_only)
     own_client = client is None
     if client is None:
         client = make_client()
@@ -33,6 +67,10 @@ def main(
             if not isinstance(row, dict):
                 continue
             company_id = str(row.get("id") or "")
+            if want_ids is not None and company_id not in want_ids:
+                continue
+            if enabled_only and not bool(row.get("enabled", False)):
+                continue
             ats = str(row.get("ats") or "")
             token = str(row.get("token") or "")
             if ats.strip().lower() not in _KNOWN:

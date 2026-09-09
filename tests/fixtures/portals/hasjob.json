@@ -1,0 +1,31 @@
+{
+  "grouped": [
+    {
+      "url": "/acme",
+      "posts": [
+        {
+          "headline": "Software Engineer Intern",
+          "url": "/acme/intern-1",
+          "company_name": "Acme Labs",
+          "location": "Bengaluru",
+          "company_logo": "/acme/intern-1/logo",
+          "date": "2026-09-01T00:00:00+00:00",
+          "pinned": false,
+          "starred": null
+        },
+        {
+          "headline": "Backend Intern",
+          "url": "/acme/intern-2",
+          "company_name": "Acme Labs",
+          "location": "Pune",
+          "company_logo": "/acme/intern-2/logo",
+          "date": "2026-09-01T00:00:00+00:00",
+          "pinned": false,
+          "starred": null
+        }
+      ]
+    }
+  ],
+  "loadmore": null,
+  "posts": []
+}

@@ -1,0 +1,50 @@
+{
+  "jobs": [
+    {
+      "id": 579,
+      "title": "Software Engineer, Data Orchestration",
+      "absolute_url": "https://stripe.com/jobs/listing/data-orchestration/579",
+      "location": {"name": "N/A"},
+      "offices": [
+        {
+          "name": "India Locations",
+          "location": null,
+          "child_ids": [80454]
+        }
+      ],
+      "content": "Minimum requirements 8+ years",
+      "company_name": "Stripe"
+    },
+    {
+      "id": 581,
+      "title": "Software Engineer, Intern",
+      "absolute_url": "https://stripe.com/jobs/search?gh_jid=8031833",
+      "location": {"name": "Bengaluru"},
+      "offices": [
+        {
+          "name": "IN-Bengaluru",
+          "location": "Bengaluru, Karnataka, India",
+          "child_ids": []
+        }
+      ],
+      "content": "Intern in Bengaluru",
+      "company_name": "Stripe"
+    },
+    {
+      "id": 572,
+      "title": "Software Engineer",
+      "absolute_url": "https://stripe.com/jobs/listing/seattle/572",
+      "location": {"name": "Seattle, WA"},
+      "offices": [
+        {
+          "name": "US-PERM",
+          "location": null,
+          "child_ids": []
+        }
+      ],
+      "content": "Seattle role",
+      "company_name": "Stripe"
+    }
+  ],
+  "meta": {"total": 3}
+}

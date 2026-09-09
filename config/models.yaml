@@ -1,6 +1,6 @@
 score:
   model: openai/gpt-4o-mini
-  prompt_version: v3
+  prompt_version: v5
   batch_size: 12
 summarize:
   model: anthropic/claude-sonnet-4

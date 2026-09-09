@@ -11,24 +11,36 @@ import httpx
 from jobdigest.ats import get_adapter
 from jobdigest.ats.base import CompanyConfig, FetchResult, FetchStatus, NormalizedJob
 from jobdigest.ats.http_client import make_client
-from jobdigest.config import load_companies, load_feeds, load_portals, load_profile
+from jobdigest.config import (
+    load_companies,
+    load_feeds,
+    load_marketplaces,
+    load_portals,
+    load_profile,
+)
 from jobdigest.db import (
+    bump_unseen_for_source,
     connect,
     finish_run,
     insert_portal_error,
     insert_run,
     job_hard_status,
+    job_seen_key,
     update_company_fetch,
     upsert_company,
     upsert_job,
 )
+from jobdigest.health import HEALTHY, collect_health, format_health
+from jobdigest.normalize import job_identity
 from jobdigest.envfile import load_dotenv
 from jobdigest.logutil import configure, get_logger
 from jobdigest.telegram import deliver as telegram_deliver
 
 log = get_logger("collect")
 
-_KNOWN_ATS = frozenset({"greenhouse", "lever", "ashby", "workable"})
+_KNOWN_ATS = frozenset(
+    {"greenhouse", "lever", "ashby", "workable", "smartrecruiters", "bamboohr"}
+)
 
 FetchFn = Callable[
     [CompanyConfig, httpx.Client | None, Callable[[float], None]],
@@ -58,7 +70,24 @@ def _board_url(company: CompanyConfig) -> str:
         return f"https://api.ashbyhq.com/posting-api/job-board/{token}"
     if company.ats == "workable":
         return f"https://apply.workable.com/api/v1/widget/accounts/{token}?details=true"
+    if company.ats == "smartrecruiters":
+        return f"https://api.smartrecruiters.com/v1/companies/{token}/postings"
+    if company.ats == "bamboohr":
+        return f"https://{token}.bamboohr.com/careers/list"
     return f"ats://{company.ats}/{token}"
+
+
+def _dead_streak(conn, company_id: int, status: FetchStatus) -> int:
+    row = conn.execute(
+        "SELECT dead_streak FROM companies WHERE id = ?",
+        (company_id,),
+    ).fetchone()
+    cur = int(row["dead_streak"] or 0) if row is not None else 0
+    if status == FetchStatus.DEAD_TOKEN:
+        return cur + 1
+    if status in (FetchStatus.OK, FetchStatus.EMPTY_BOARD):
+        return 0
+    return cur
 
 
 def _default_fetch(
@@ -107,6 +136,38 @@ def _hard_row(conn, job_id: int) -> tuple[str, str]:
     return str(row["hard_status"] or ""), str(row["hard_reason"] or "")
 
 
+def _seen_keys(jobs: list[NormalizedJob]) -> set[str]:
+    keys: set[str] = set()
+    for job in jobs:
+        ext = (job.external_id or "").strip()
+        if ext:
+            key = job_seen_key(external_id=ext, apply_url_norm=None)
+        else:
+            _col, norm = job_identity(
+                job.apply_url, job.hosted_url, job.source, job.external_id
+            )
+            _ = _col
+            key = job_seen_key(external_id=None, apply_url_norm=norm)
+        if key:
+            keys.add(key)
+    return keys
+
+
+def _sweep_source(
+    conn,
+    source: str,
+    jobs: list[NormalizedJob],
+    stats: dict[str, int],
+    *,
+    success: bool,
+) -> None:
+    result = bump_unseen_for_source(
+        conn, source, _seen_keys(jobs), success=success
+    )
+    stats["missed"] += int(result["missed"])
+    stats["tombstoned"] += int(result["tombstoned"])
+
+
 def _upsert_jobs(
     conn,
     profile,
@@ -132,6 +193,8 @@ def _upsert_jobs(
             raw_json=job.raw_json,
             ats=job.ats,
             employment_hint=job.employment_hint,
+            workplace_hint=job.workplace_hint,
+            posted_at=job.posted_at,
         )
         if action == "skip" or job_id is None:
             stats["skipped"] += 1
@@ -167,9 +230,11 @@ def run(
     skip_ats: bool = False,
     skip_portals: bool = False,
     skip_feeds: bool = False,
+    skip_marketplaces: bool = False,
     portal_fetch: tuple[str, ...] | None = None,
     portal_run_fn: Callable[..., Any] | None = None,
     feed_run_fn: Callable[..., Any] | None = None,
+    marketplace_run_fn: Callable[..., Any] | None = None,
     telegram_http_post: TelegramHttpPost | None = None,
 ) -> int:
     load_dotenv()
@@ -181,6 +246,7 @@ def run(
     if ats_only:
         skip_portals = True
         skip_feeds = True
+        skip_marketplaces = True
 
     profile = load_profile()
     payload = load_companies()
@@ -192,11 +258,12 @@ def run(
     )
     log.info(
         "collect start ats_only=%s skip_ats=%s skip_portals=%s skip_feeds=%s "
-        "portal_fetch=%s yaml_enabled=%s",
+        "skip_marketplaces=%s portal_fetch=%s yaml_enabled=%s",
         ats_only,
         skip_ats,
         skip_portals,
         skip_feeds,
+        skip_marketplaces,
         portal_fetch,
         yaml_enabled,
     )
@@ -212,6 +279,8 @@ def run(
         "pass": 0,
         "reject": 0,
         "errors": 0,
+        "missed": 0,
+        "tombstoned": 0,
     }
     enabled_units = 0
     error_units = 0
@@ -219,6 +288,7 @@ def run(
     error_msg: str | None = None
     bundle = None
     portals_mod = None
+    health_footer = ""
 
     try:
         company_rows = [] if skip_ats else rows
@@ -254,12 +324,15 @@ def run(
                 result = FetchResult(FetchStatus.ERROR, None, [], error=str(exc))
 
             log.info(
-                "company fetch done id=%s status=%s http=%s jobs=%s",
+                "company fetch done id=%s status=%s http=%s jobs=%s complete=%s",
                 company.id,
                 result.status.value,
                 result.http_status,
                 len(result.jobs),
+                bool(getattr(result, "complete", True)),
             )
+            board_url = _board_url(company)
+            streak = _dead_streak(conn, company_id, result.status)
             if result.status == FetchStatus.OK:
                 update_company_fetch(
                     conn,
@@ -267,8 +340,17 @@ def run(
                     http_status=result.http_status,
                     job_count=len(result.jobs),
                     error=None,
+                    resolved_url=board_url,
+                    dead_streak=streak,
                 )
                 _upsert_jobs(conn, profile, result.jobs, stats, company_id=company_id)
+                _sweep_source(
+                    conn,
+                    company.id,
+                    result.jobs,
+                    stats,
+                    success=bool(getattr(result, "complete", True)),
+                )
             elif result.status == FetchStatus.EMPTY_BOARD:
                 update_company_fetch(
                     conn,
@@ -276,6 +358,15 @@ def run(
                     http_status=result.http_status,
                     job_count=0,
                     error=None,
+                    resolved_url=board_url,
+                    dead_streak=streak,
+                )
+                _sweep_source(
+                    conn,
+                    company.id,
+                    [],
+                    stats,
+                    success=bool(getattr(result, "complete", True)),
                 )
             elif result.status == FetchStatus.DEAD_TOKEN:
                 update_company_fetch(
@@ -284,6 +375,8 @@ def run(
                     http_status=result.http_status,
                     job_count=0,
                     error="dead_token",
+                    resolved_url=board_url,
+                    dead_streak=streak,
                 )
             else:
                 error_units += 1
@@ -295,6 +388,8 @@ def run(
                     http_status=result.http_status,
                     job_count=0,
                     error=detail,
+                    resolved_url=board_url,
+                    dead_streak=streak,
                 )
                 insert_portal_error(
                     conn,
@@ -306,8 +401,9 @@ def run(
                     detail=detail,
                 )
 
-        if not skip_portals or not skip_feeds:
+        if not skip_portals or not skip_feeds or not skip_marketplaces:
             from jobdigest import feeds as feeds_mod
+            from jobdigest import marketplaces as marketplaces_mod
             from jobdigest import portals as portals_pkg
 
             portals_mod = portals_pkg
@@ -332,7 +428,19 @@ def run(
                     for row in _dict_rows(load_feeds(), "feeds")
                     if bool(row.get("enabled"))
                 ]
-            log.info("portals enabled=%s feeds enabled=%s", len(portal_rows), len(feed_rows))
+            marketplace_rows = []
+            if not skip_marketplaces:
+                marketplace_rows = [
+                    row
+                    for row in _dict_rows(load_marketplaces(), "marketplaces")
+                    if bool(row.get("enabled"))
+                ]
+            log.info(
+                "portals enabled=%s feeds enabled=%s marketplaces enabled=%s",
+                len(portal_rows),
+                len(feed_rows),
+                len(marketplace_rows),
+            )
             last_host: dict = {}
             robots_cache: dict[str, str] = {}
             if portal_run_fn is None and portal_rows:
@@ -373,8 +481,10 @@ def run(
                     )
                     continue
                 if _result_ok(result):
-                    log.info("portal ok name=%s jobs=%s", name, len(_result_jobs(result)))
-                    _upsert_jobs(conn, profile, _result_jobs(result), stats)
+                    portal_jobs = _result_jobs(result)
+                    log.info("portal ok name=%s jobs=%s", name, len(portal_jobs))
+                    _upsert_jobs(conn, profile, portal_jobs, stats)
+                    _sweep_source(conn, name, portal_jobs, stats, success=True)
                 else:
                     error_units += 1
                     stats["errors"] += 1
@@ -414,8 +524,10 @@ def run(
                     )
                     continue
                 if _result_ok(result):
-                    log.info("feed ok name=%s jobs=%s", name, len(_result_jobs(result)))
-                    _upsert_jobs(conn, profile, _result_jobs(result), stats)
+                    feed_jobs = _result_jobs(result)
+                    log.info("feed ok name=%s jobs=%s", name, len(feed_jobs))
+                    _upsert_jobs(conn, profile, feed_jobs, stats)
+                    _sweep_source(conn, name, feed_jobs, stats, success=True)
                 else:
                     error_units += 1
                     stats["errors"] += 1
@@ -431,6 +543,49 @@ def run(
                         detail=detail,
                     )
 
+            for row in marketplace_rows:
+                enabled_units += 1
+                name = str(row.get("name") or "")
+                site = str(row.get("site") or "")
+                log.info("marketplace fetch name=%s site=%s", name, site)
+                try:
+                    if marketplace_run_fn is not None:
+                        result = marketplace_run_fn(row)
+                    else:
+                        result = marketplaces_mod.run_one(row)
+                except Exception as exc:
+                    error_units += 1
+                    stats["errors"] += 1
+                    insert_portal_error(
+                        conn,
+                        run_id=run_id,
+                        portal_name=name,
+                        url=site,
+                        error_class=_error_class(str(exc)),
+                        http_status=None,
+                        detail=str(exc),
+                    )
+                    continue
+                if _result_ok(result):
+                    marketplace_jobs = _result_jobs(result)
+                    log.info("marketplace ok name=%s jobs=%s", name, len(marketplace_jobs))
+                    _upsert_jobs(conn, profile, marketplace_jobs, stats)
+                    _sweep_source(conn, name, marketplace_jobs, stats, success=True)
+                else:
+                    error_units += 1
+                    stats["errors"] += 1
+                    log.info("marketplace error name=%s", name)
+                    detail = str(getattr(result, "detail", None) or getattr(result, "error", None) or "error")
+                    insert_portal_error(
+                        conn,
+                        run_id=run_id,
+                        portal_name=name,
+                        url=site,
+                        error_class=str(getattr(result, "error_class", None) or _error_class(detail)),
+                        http_status=getattr(result, "http_status", None),
+                        detail=detail,
+                    )
+
         if enabled_units > 0 and error_units == enabled_units:
             status = "error"
             error_msg = "COLLECT FAILED"
@@ -438,6 +593,12 @@ def run(
         if portals_mod is not None:
             portals_mod.close_bundle(bundle)
         finish_run(conn, run_id, status, stats, error=error_msg)
+        try:
+            text = format_health(collect_health(conn))
+            if text != HEALTHY:
+                health_footer = text
+        except Exception:
+            log.exception("health footer failed")
         conn.close()
         if own_client and client is not None:
             client.close()
@@ -445,10 +606,12 @@ def run(
     line = (
         f"collect {status} fetched={stats['fetched']} inserted={stats['inserted']} "
         f"updated={stats['updated']} skipped={stats['skipped']} "
-        f"pass={stats['pass']} reject={stats['reject']}"
+        f"pass={stats['pass']} reject={stats['reject']} "
+        f"missed={stats['missed']} tombstoned={stats['tombstoned']}"
     )
     log.info(
-        "collect done status=%s fetched=%s inserted=%s updated=%s skipped=%s pass=%s reject=%s errors=%s",
+        "collect done status=%s fetched=%s inserted=%s updated=%s skipped=%s "
+        "pass=%s reject=%s errors=%s missed=%s tombstoned=%s",
         status,
         stats["fetched"],
         stats["inserted"],
@@ -457,8 +620,12 @@ def run(
         stats["pass"],
         stats["reject"],
         stats["errors"],
+        stats["missed"],
+        stats["tombstoned"],
     )
     print(line)
+    if health_footer:
+        print(health_footer)
     if status == "error":
         print("COLLECT FAILED", file=sys.stderr)
         telegram_deliver(

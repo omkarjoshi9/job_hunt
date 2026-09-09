@@ -10,14 +10,20 @@ _RANGE = re.compile(
 )
 _PLUS = re.compile(r"(?<!\d)(\d+)\s*\+\s*(?:years?|yrs?)\b", re.I)
 _MIN = re.compile(
-    r"(?:minimum|min(?:imum)?|at least)\s*(\d+)\s*(?:years?|yrs?)\b",
+    r"(?:minimum|min(?:imum)?|at least|(?<![a-z])over|more than)\s*(\d+)\s*(?:years?|yrs?)\b(?!\s+ago)",
+    re.I,
+)
+_PLUS_N = re.compile(
+    r"\bplus\s+(\d+)\s*(?:years?|yrs?)\s+(?:of\s+)?(?:experience|relevant|professional|related)\b",
     re.I,
 )
 
 _REMOTE_US = (
     re.compile(r"work authorization in the united states", re.I),
     re.compile(r"eligible to work in the (us|u\.s\.?|united states)", re.I),
-    re.compile(r"remote\s*(us|u\.s\.?|usa|united states)", re.I),
+    re.compile(r"remote\s*[-–/]?\s*(us|u\.s\.?|usa|united states)\b", re.I),
+    re.compile(r"(?<![a-z])(?:us|u\.s\.?|usa|united states)\s*[-–/]\s*remote\b", re.I),
+    re.compile(r"\bus[- ]?perm\b", re.I),
     re.compile(r"united states only", re.I),
     re.compile(r"us only remote", re.I),
 )
@@ -42,10 +48,12 @@ def ops_non_swe(title: str) -> bool:
 
 def yoe_too_high(blob: str, min_yoe_reject: int) -> bool:
     for m in _RANGE.finditer(blob):
-        lo, _hi = int(m.group(1)), int(m.group(2))
+        lo, hi = int(m.group(1)), int(m.group(2))
         if lo == 0:
             continue
-        if lo >= min_yoe_reject:
+        if hi < lo:
+            continue
+        if lo >= min_yoe_reject or (lo >= 1 and hi >= min_yoe_reject):
             return True
     for m in _PLUS.finditer(blob):
         if int(m.group(1)) >= min_yoe_reject:
@@ -53,12 +61,20 @@ def yoe_too_high(blob: str, min_yoe_reject: int) -> bool:
     for m in _MIN.finditer(blob):
         if int(m.group(1)) >= min_yoe_reject:
             return True
+    for m in _PLUS_N.finditer(blob):
+        if int(m.group(1)) >= min_yoe_reject:
+            return True
     return False
 
 
+def _kw_hit(keyword: str, blob: str) -> bool:
+    return re.search(r"\b" + re.escape(keyword.lower()) + r"\b", blob) is not None
+
+
 def _india_ok(profile: Profile, title: str, location_raw: str, desc2000: str) -> bool:
-    blob = f"{title}\n{location_raw}\n{desc2000}".lower()
-    return any(kw.lower() in blob for kw in profile.india_keywords)
+    loc = (location_raw or "").strip()
+    blob = f"{title}\n{loc}".lower() if loc else f"{title}\n{desc2000}".lower()
+    return any(_kw_hit(kw, blob) for kw in profile.india_keywords)
 
 
 def _remote_us(blob: str) -> bool:
@@ -75,14 +91,15 @@ def hard_filter(
 ) -> tuple[str, str]:
     """Return (hard_status, hard_reason) where status is pass|reject."""
     desc2000 = (description_text or "")[:2000]
-    blob = f"{title}\n{location_raw}\n{desc2000}"
+    blob_yoe = f"{title}\n{location_raw}\n{(description_text or '')}"
+    blob_remote = f"{title}\n{location_raw}\n{desc2000}"
     if profile.title_reject_regex and re.search(
         profile.title_reject_regex, title or "", re.I
     ):
         return "reject", "title_reject"
-    if yoe_too_high(blob, profile.min_yoe_reject):
+    if yoe_too_high(blob_yoe, profile.min_yoe_reject):
         return "reject", "yoe"
-    if profile.reject_remote_us and _remote_us(blob):
+    if profile.reject_remote_us and _remote_us(blob_remote):
         return "reject", "remote_us"
     if not _india_ok(profile, title or "", location_raw or "", desc2000):
         return "reject", "location"

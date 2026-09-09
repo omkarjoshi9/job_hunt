@@ -105,6 +105,8 @@ def run_one(
     if not check_url(url, cache=robots_cache, session=session, allowed_fn=allowed_fn):
         return _error(name=name, url=url, error_class="robots", detail="disallowed by robots.txt")
 
+    extra_headers = {"Accept": "application/json"} if parser_name == "hasjob" else None
+
     try:
         if get_html_fn is not None:
             fetched = get_html_fn(
@@ -114,6 +116,7 @@ def run_one(
                 last_host=last_host,
                 fetch=fetch,
                 solve_cloudflare=solve_cf,
+                extra_headers=extra_headers,
             )
         else:
             active = session
@@ -142,6 +145,7 @@ def run_one(
                 last_host=last_host,
                 fetch=fetch,
                 solve_cloudflare=solve_cf,
+                extra_headers=extra_headers,
             )
         if len(fetched) == 2:
             status, html = fetched

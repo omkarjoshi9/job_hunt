@@ -1,0 +1,40 @@
+{
+  "meta": { "totalCount": 2 },
+  "result": [
+    {
+      "id": "101",
+      "jobOpeningName": "  Software Engineer Intern  ",
+      "departmentId": "1",
+      "departmentLabel": "Software Engineering",
+      "employmentStatusLabel": "Internship",
+      "employmentType": null,
+      "location": { "city": "Bengaluru", "state": "Karnataka" },
+      "atsLocation": {
+        "country": "India",
+        "state": "Karnataka",
+        "province": null,
+        "city": "Bengaluru"
+      },
+      "isRemote": false,
+      "locationType": "1",
+      "datePosted": "2024-06-01T00:00:00Z"
+    },
+    {
+      "id": "102",
+      "jobOpeningName": "Staff Engineer",
+      "departmentId": "2",
+      "departmentLabel": "Engineering",
+      "employmentStatusLabel": "Full-Time",
+      "employmentType": null,
+      "location": { "city": null, "state": null },
+      "atsLocation": {
+        "country": "USA",
+        "state": null,
+        "province": null,
+        "city": "Austin"
+      },
+      "isRemote": true,
+      "locationType": "1"
+    }
+  ]
+}

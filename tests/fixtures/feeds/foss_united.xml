@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>FOSS United Jobs</title>
+    <link>https://fossunited.org/jobs</link>
+    <description>Approved and published jobs</description>
+    <item>
+      <title>Software Engineer Intern</title>
+      <link>https://fossunited.org/jobs/fixture-intern-a</link>
+      <guid isPermaLink="false">https://fossunited.org/jobs/fixture-intern-a</guid>
+      <description>Intern role in Bengaluru. No application cookies in this fixture.</description>
+    </item>
+    <item>
+      <title>Open Source Intern</title>
+      <link>https://fossunited.org/jobs/fixture-intern-b</link>
+      <guid isPermaLink="false">https://fossunited.org/jobs/fixture-intern-b</guid>
+      <description>Intern role in Pune. Employer contact stripped.</description>
+    </item>
+  </channel>
+</rss>

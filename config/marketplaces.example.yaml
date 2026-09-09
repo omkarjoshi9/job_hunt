@@ -1,0 +1,68 @@
+marketplaces:
+  - name: naukri-intern-india
+    site: naukri
+    enabled: false
+    search_term: software engineer intern
+    location: Bengaluru
+    results_wanted: 30
+    hours_old: 72
+    job_type: internship
+    linkedin_fetch_description: true
+    notes: "JobSpy Naukri search; descriptions need linkedin_fetch_description. Enable locally after probe. Requires pip install -e \".[marketplaces]\"."
+  - name: indeed-intern-india
+    site: indeed
+    enabled: false
+    search_term: software engineer intern
+    location: Bengaluru, Karnataka
+    country_indeed: India
+    results_wanted: 30
+    hours_old: 72
+    job_type: internship
+    notes: "JobSpy Indeed India. Enable locally after probe."
+  - name: linkedin-intern-india
+    site: linkedin
+    enabled: false
+    search_term: software engineer intern
+    location: Bengaluru, India
+    results_wanted: 20
+    hours_old: 72
+    job_type: internship
+    notes: "JobSpy LinkedIn guest search. Rate-limits quickly; set JOBDIGEST_MARKETPLACE_PROXIES. Separate from portals.yaml kill-list."
+  - name: glassdoor-intern-india
+    site: glassdoor
+    enabled: false
+    search_term: software engineer intern
+    location: Bengaluru
+    country_indeed: India
+    results_wanted: 20
+    hours_old: 72
+    job_type: internship
+    notes: "JobSpy Glassdoor India via country_indeed."
+  - name: google-intern-india
+    site: google
+    enabled: false
+    search_term: software engineer intern
+    google_search_term: software engineer intern jobs near Bengaluru, Karnataka since last week
+    results_wanted: 20
+    notes: "JobSpy Google Jobs; google_search_term must match the jobs search box, not a vague query."
+  - name: zip-intern-us
+    site: zip_recruiter
+    enabled: false
+    search_term: software engineer intern
+    location: San Francisco, CA
+    results_wanted: 20
+    hours_old: 72
+    job_type: internship
+    notes: "ZipRecruiter is US/Canada only. Off-target for India intern; included for completeness."
+  - name: bayt-intern
+    site: bayt
+    enabled: false
+    search_term: software engineer intern
+    results_wanted: 20
+    notes: "Bayt uses search_term only (international / MENA-oriented)."
+  - name: bdjobs-intern
+    site: bdjobs
+    enabled: false
+    search_term: software engineer intern
+    results_wanted: 20
+    notes: "BDJobs is Bangladesh-first. Enable only if you want that market."

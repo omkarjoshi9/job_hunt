@@ -37,11 +37,14 @@ india_keywords:
   - NCR
   - PAN India
   - Remote India
-title_allow_intern: "intern|internship|apprentice|trainee|campus"
-title_allow_newgrad: "new[- ]?grad|university|graduate|junior|sde\\s*1|software engineer|associate software|software engineer associate|associate sde|fresher|0[-–]1"
-title_reject_regex: "staff|principal|distinguished|fellow|senior|\\bsr\\.?\\b|lead|manager|director|vp|head of"
+title_allow_intern: "\\bintern(?:ships?)?\\b|apprentice|trainee|\\bcampus\\b(?!\\s*recruit)"
+title_allow_newgrad: "new[- ]?grad|\\bgraduate\\b|junior|sde\\s*1|software engineer|associate software|software engineer associate|associate sde|fresher|0[-–]1"
+title_reject_regex: "\\bstaff\\b|principal|distinguished|\\bfellow\\b|\\bsenior\\b|\\bsr\\.?\\b|\\blead\\b|\\bmanager\\b|\\bdirector\\b|\\bvp\\b|\\bhead of\\b"
 reject_remote_us: true
 min_yoe_reject: 3
 timezone: Asia/Kolkata
-digest_hour: 10
 digest_max: 12
+watchlist: []
+urgent_score_min: 85
+urgent_daily_cap: 3
+github_url: ""

@@ -49,6 +49,9 @@ class _OkPost:
     status_code = 200
     text = '{"ok": true}'
 
+    def json(self):
+        return json.loads(self.text)
+
 
 def test_digest_score_failed_sends_alert(monkeypatch, tmp_path, capsys):
     posts = []
@@ -178,7 +181,126 @@ def test_digest_nonempty_sends_body(monkeypatch, tmp_path, capsys):
     captured = capsys.readouterr()
     assert code == 0
     assert "Acme" in captured.out
-    assert len(posts) == 1
+    assert len(posts) >= 2
     assert "Acme" in posts[0]["text"]
+    assert "Why you:" in posts[0]["text"]
     assert posts[0]["chat_id"] == "7"
     assert "parse_mode" not in posts[0]
+    marked = [p for p in posts if p.get("reply_markup")]
+    assert len(marked) == 1
+    assert marked[0]["text"] == "Tap a number to open a card."
+
+
+def test_digest_telegram_shows_why(monkeypatch, tmp_path, capsys):
+    posts = []
+
+    def http_post(url, json=None, timeout=None):
+        _ = timeout
+        posts.append(dict(json or {}))
+        return _OkPost()
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "7")
+    db = tmp_path / "jobs.db"
+    conn = connect(db)
+    profile = load_profile()
+    try:
+        _collect_ok(conn)
+        _pass_job(
+            conn,
+            profile,
+            url="https://example.com/jobs/why",
+            ext="why",
+            title="Software Engineer Intern",
+            company="Acme",
+        )
+    finally:
+        conn.close()
+
+    def chat_fn(messages, *, model, api_key="", json_mode=False, client=None):
+        if json_mode:
+            user = messages[-1]["content"]
+            batch_ids = [int(x) for x in re.findall(r"<<<JOB id=(\d+)>>>", user)]
+            jobs = [_item(i, True) for i in batch_ids]
+            return json.dumps({"jobs": jobs})
+        return ""
+
+    code = run(db_path=db, chat_fn=chat_fn, telegram_http_post=http_post)
+    _ = capsys.readouterr()
+    assert code == 0
+    assert "Why you:" in posts[0]["text"]
+    assert "fit" in posts[0]["text"]
+    assert "parse_mode" not in posts[0]
+
+
+def test_digest_twelve_guests_split_does_not_straddle_cards(
+    monkeypatch, tmp_path, capsys
+):
+    posts = []
+
+    def http_post(url, json=None, timeout=None):
+        _ = timeout
+        posts.append(dict(json or {}))
+        return _OkPost()
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "7")
+    db = tmp_path / "jobs.db"
+    conn = connect(db)
+    profile = load_profile()
+    why = "W" * 160
+    long_url_suffix = "x" * 80
+    try:
+        _collect_ok(conn)
+        ids = []
+        for i in range(12):
+            ids.append(
+                _pass_job(
+                    conn,
+                    profile,
+                    url=f"https://example.com/jobs/{i}-{long_url_suffix}",
+                    ext=f"t{i}",
+                    title="Software Engineer Intern",
+                    company=f"Co{i:02d}",
+                )
+            )
+        relevant = set(ids)
+    finally:
+        conn.close()
+
+    def chat_fn(messages, *, model, api_key="", json_mode=False, client=None):
+        if json_mode:
+            user = messages[-1]["content"]
+            batch_ids = [int(x) for x in re.findall(r"<<<JOB id=(\d+)>>>", user)]
+            jobs = []
+            for jid in batch_ids:
+                item = _item(jid, jid in relevant)
+                item["why"] = why
+                item["score"] = 90
+                jobs.append(item)
+            return json.dumps({"jobs": jobs})
+        return ""
+
+    code = run(db_path=db, chat_fn=chat_fn, telegram_http_post=http_post)
+    _ = capsys.readouterr()
+    assert code == 0
+    assert len(posts) >= 2
+    assert all(len(p["text"]) <= 3800 for p in posts)
+    numbered = []
+    for part in posts:
+        stripped = part["text"].lstrip()
+        assert not stripped.startswith("Why you:")
+        assert not stripped.startswith("Gap:")
+        for block in part["text"].split("\n\n"):
+            block = block.strip()
+            if not block:
+                continue
+            first = block.split("\n", 1)[0]
+            if first[:1].isdigit() and ". " in first:
+                numbered.append(block)
+    assert len(numbered) == 12
+    for i, card in enumerate(numbered, 1):
+        lines = card.split("\n")
+        assert len(lines) == 2
+        assert lines[0].startswith(f"{i}.")
+        assert "Why you:" in lines[1]

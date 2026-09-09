@@ -14,6 +14,7 @@ from jobdigest.ats.base import (
     decode_html_content,
     empty_or_ok,
     join_locations,
+    posted_at_from_item,
 )
 from jobdigest.ats.http_client import parse_json_or_none, request_get
 
@@ -35,6 +36,9 @@ class AshbyAdapter:
         self._sleep = sleep
 
     def fetch(self, company: CompanyConfig) -> FetchResult:
+        # The Ashby posting-api /job-board/{token} endpoint returns all listed jobs in a
+        # single response; it does not support offset, cursor, or page parameters.
+        # No pagination loop is needed or appropriate here.
         url = f"https://api.ashbyhq.com/posting-api/job-board/{company.token}"
         try:
             response = request_get(self._client, url, sleep=self._sleep)
@@ -87,4 +91,5 @@ class AshbyAdapter:
             ats=self.ats,
             external_id=str(item.get("id") or ""),
             raw_json=json.dumps(item, separators=(",", ":"), ensure_ascii=False),
+            posted_at=posted_at_from_item(item, "publishedAt", "publishedDate"),
         )

@@ -47,3 +47,21 @@ companies:
     token: fractal
     enabled: false
     notes: "unimplemented; canvas: India-office; Workday not public JSON"
+  - id: ixigo
+    name: ixigo
+    ats: smartrecruiters
+    token: ixigo
+    enabled: false
+    notes: "public stub; SmartRecruiters list API; enable locally after probe"
+  - id: freshworks-sr
+    name: Freshworks
+    ats: smartrecruiters
+    token: Freshworks
+    enabled: false
+    notes: "public stub; second row besides Lever freshworks; enable locally after probe"
+  - id: zepto
+    name: Zepto
+    ats: bamboohr
+    token: zepto
+    enabled: false
+    notes: "public stub; BambooHR public careers list; thin JD; enable locally after probe"

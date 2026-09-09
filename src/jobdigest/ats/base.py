@@ -43,6 +43,7 @@ class NormalizedJob:
     external_id: str
     raw_json: str
     fetched_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    posted_at: datetime | str | None = None
 
 
 @dataclass
@@ -51,6 +52,7 @@ class FetchResult:
     http_status: int | None
     jobs: list[NormalizedJob]
     error: str | None = None
+    complete: bool = True
 
 
 class BoardAdapter(Protocol):
@@ -93,3 +95,42 @@ def empty_or_ok(n_jobs: int) -> FetchStatus:
     if n_jobs == 0:
         return FetchStatus.EMPTY_BOARD
     return FetchStatus.OK
+
+
+def parse_posted_at(value: object) -> str | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        seconds = float(value)
+        if seconds > 1e12:
+            seconds = seconds / 1000.0
+        try:
+            dt = datetime.fromtimestamp(seconds, tz=timezone.utc).replace(microsecond=0)
+        except (OSError, OverflowError, ValueError):
+            return None
+        return dt.isoformat().replace("+00:00", "Z")
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    dt = dt.replace(microsecond=0)
+    return dt.isoformat().replace("+00:00", "Z")
+
+
+def posted_at_from_item(item: dict, *keys: str) -> str | None:
+    for key in keys:
+        parsed = parse_posted_at(item.get(key))
+        if parsed is not None:
+            return parsed
+    return None

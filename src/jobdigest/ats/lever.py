@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-
 import httpx
 
 from jobdigest.ats.base import (
@@ -14,6 +13,7 @@ from jobdigest.ats.base import (
     decode_html_content,
     empty_or_ok,
     join_locations,
+    parse_posted_at,
 )
 from jobdigest.ats.http_client import parse_json_or_none, request_get
 
@@ -94,4 +94,5 @@ class LeverAdapter:
             ats=self.ats,
             external_id=str(item.get("id") or ""),
             raw_json=json.dumps(item, separators=(",", ":"), ensure_ascii=False),
+            posted_at=parse_posted_at(item.get("createdAt")),
         )

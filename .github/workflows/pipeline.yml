@@ -11,6 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       due: ${{ steps.gate.outputs.due }}
+      slot: ${{ steps.gate.outputs.slot }}
     steps:
       - uses: actions/checkout@v4
       - id: gate
@@ -18,6 +19,7 @@ jobs:
         env:
           PYTHONPATH: src
           JOBDIGEST_CRON: ${{ secrets.JOBDIGEST_CRON }}
+          JOBDIGEST_CRON_URGENT: ${{ secrets.JOBDIGEST_CRON_URGENT }}
         run: python3 -m jobdigest.cron
   pipeline:
     needs: gate
@@ -30,6 +32,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -e .
+      - run: pip install -e ".[marketplaces]"
       - uses: actions/cache@v4
         id: playwright-cache
         with:
@@ -47,6 +50,7 @@ jobs:
           MODELS_YAML: ${{ secrets.MODELS_YAML }}
           PORTALS_YAML: ${{ secrets.PORTALS_YAML }}
           FEEDS_YAML: ${{ secrets.FEEDS_YAML }}
+          MARKETPLACES_YAML: ${{ secrets.MARKETPLACES_YAML }}
         run: |
           python <<'PY'
           import os
@@ -69,6 +73,9 @@ jobs:
               sys.exit(1)
           for key, rel in files.items():
               Path(rel).write_text(os.environ[key], encoding="utf-8")
+          marketplaces = (os.environ.get("MARKETPLACES_YAML") or "").strip()
+          if marketplaces:
+              Path("config/marketplaces.yaml").write_text(marketplaces, encoding="utf-8")
           PY
       - run: python -m jobdigest collect
         env:
@@ -76,14 +83,32 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           JOBDIGEST_REQUIRE_TELEGRAM: "1"
-      - run: python -m jobdigest digest
+          JOBDIGEST_MARKETPLACE_PROXIES: ${{ secrets.JOBDIGEST_MARKETPLACE_PROXIES }}
+      - name: Digest
+        if: needs.gate.outputs.slot != 'urgent'
+        run: python -m jobdigest digest
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           JOBDIGEST_REQUIRE_TELEGRAM: "1"
+      - name: Urgent digest
+        if: needs.gate.outputs.slot == 'urgent'
+        run: python -m jobdigest digest --urgent-only
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          JOBDIGEST_REQUIRE_TELEGRAM: "1"
+      - name: Contacts enrich
+        run: python -m jobdigest contacts
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          JOBDIGEST_GITHUB_TOKEN: ${{ secrets.JOBDIGEST_GITHUB_TOKEN }}
       - name: Write Google service account
+        if: needs.gate.outputs.slot != 'urgent'
         env:
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
         run: |
@@ -98,7 +123,9 @@ jobs:
               sys.exit(1)
           Path("google-sa.json").write_text(raw, encoding="utf-8")
           PY
-      - run: python -m jobdigest sheet-sync
+      - name: Sheet sync
+        if: needs.gate.outputs.slot != 'urgent'
+        run: python -m jobdigest sheet-sync
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}

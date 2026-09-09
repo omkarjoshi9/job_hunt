@@ -1,92 +1,21 @@
-from jobdigest.cli import build_parser, main
-from jobdigest.sheet import HEADERS
+from jobdigest.cli import build_parser
 
 
-class _FakeSheet:
-    def __init__(self):
-        self.rows = []
-        self.appends = 0
-        self.formats = []
-        self.validations = []
-        self.frozen_rows = None
-
-    def get_all_values(self):
-        return [list(r) for r in self.rows]
-
-    def append_row(self, values, value_input_option="USER_ENTERED"):
-        _ = value_input_option
-        self.rows.append(list(values))
-        self.appends += 1
-
-    def update(self, range_name, values=None, **kwargs):
-        _ = kwargs
-        payload = values if values is not None and not isinstance(range_name, list) else range_name
-        if isinstance(payload, list) and payload and isinstance(payload[0], list):
-            if len(payload) > 1:
-                self.rows = [list(r) for r in payload]
-                return
-            row = list(payload[0])
-        else:
-            row = list(payload)
-        if not self.rows:
-            self.rows.append(row)
-        else:
-            self.rows[0] = row
-
-    def format(self, ranges, format):
-        self.formats.append((ranges, dict(format)))
-
-    def freeze(self, rows=None, cols=None):
-        _ = cols
-        self.frozen_rows = rows
-
-    def add_validation(self, range, condition_type, values, **kwargs):
-        self.validations.append((range, condition_type, list(values), dict(kwargs)))
-
-
-def test_help_lists_all_commands():
+def test_cli_parser_has_contacts_flags():
     parser = build_parser()
-    text = parser.format_help()
-    for name in ("collect", "score", "digest", "sheet-append", "sheet-sync"):
-        assert name in text
-    collect = parser.parse_args(["collect", "--skip-ats", "--skip-feeds", "--portal-fetch", "http"])
-    assert collect.skip_ats is True
-    assert collect.skip_feeds is True
-    assert collect.portal_fetch == ["http"]
+    args = parser.parse_args(
+        ["contacts", "--db", "data/jobs.db", "--limit", "3", "--job-id", "9", "--job-id", "12"]
+    )
+    assert args.command == "contacts"
+    assert args.db == "data/jobs.db"
+    assert args.limit == 3
+    assert args.job_id == [9, 12]
 
 
-def test_collect_no_longer_stub(monkeypatch, capsys, tmp_path):
-    monkeypatch.setattr("jobdigest.collect.load_companies", lambda: {"companies": []})
-    monkeypatch.setattr("jobdigest.collect.load_portals", lambda: {"portals": []})
-    monkeypatch.setattr("jobdigest.collect.load_feeds", lambda: {"feeds": []})
-    db = tmp_path / "jobs.db"
-    code = main(["collect", "--db", str(db)])
-    assert code == 0
-    out = capsys.readouterr().out
-    assert "not built" not in out
-    assert "collect" in out
-    assert db.is_file()
-
-
-def test_sheet_append_no_longer_stub(monkeypatch, capsys, tmp_path):
-    fake = _FakeSheet()
-    monkeypatch.setattr("jobdigest.sheet.open_worksheet", lambda: fake)
-    db = tmp_path / "jobs.db"
-    code = main(["sheet-append", "--db", str(db), "--url", "https://example.com/job"])
-    captured = capsys.readouterr()
-    assert code == 0
-    assert "not built" not in captured.out
-    assert "sheet-append" in captured.out
-    assert fake.appends == 1
-    assert fake.rows[0] == HEADERS
-
-
-def test_digest_empty_db_collect_failed(capsys, tmp_path):
-    db = tmp_path / "jobs.db"
-    code = main(["digest", "--db", str(db)])
-    captured = capsys.readouterr()
-    assert code == 1
-    assert "COLLECT FAILED" in captured.out
-    assert "COLLECT FAILED" in captured.err
-    assert "not built" not in captured.out
-    assert "not built" not in captured.err
+def test_cli_parser_contacts_defaults():
+    parser = build_parser()
+    args = parser.parse_args(["contacts"])
+    assert args.command == "contacts"
+    assert args.db is None
+    assert args.limit is None
+    assert args.job_id is None

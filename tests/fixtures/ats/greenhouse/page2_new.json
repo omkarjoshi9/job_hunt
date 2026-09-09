@@ -1,0 +1,13 @@
+{
+  "jobs": [
+    {
+      "id": 103,
+      "title": "New Grad Software Engineer",
+      "absolute_url": "https://boards.greenhouse.io/example/jobs/103",
+      "location": {"name": "Pune, India"},
+      "content": "Pune new grad",
+      "company_name": "Example Corp"
+    }
+  ],
+  "meta": {"total": 3}
+}

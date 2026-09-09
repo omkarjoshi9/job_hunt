@@ -1,0 +1,10 @@
+{
+  "items": [
+    {
+      "commit": {
+        "author": {"email": "jane.doe@acme.com"},
+        "committer": {"email": "noreply@github.com"}
+      }
+    }
+  ]
+}

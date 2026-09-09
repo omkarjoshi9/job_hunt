@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -107,6 +108,49 @@ def test_portal_same_url_does_not_double(monkeypatch, tmp_path):
         conn.close()
 
 
+def test_portal_and_feed_same_url_does_not_double(monkeypatch, tmp_path):
+    portal_job = _intern_job(source="dup-portal", ats="portal")
+    feed_job = _intern_job(source="dup-feed", ats="rss")
+
+    def boom_ats(company, client, sleep):
+        raise AssertionError("ATS should stay skipped")
+
+    def portal_run_fn(row):
+        _ = row
+        return PortalResult(status="ok", jobs=[portal_job], http_status=200)
+
+    def feed_run_fn(row):
+        _ = row
+        return PortalResult(status="ok", jobs=[feed_job], http_status=200)
+
+    monkeypatch.setattr("jobdigest.collect.load_companies", _enabled_companies)
+    monkeypatch.setattr("jobdigest.collect.load_portals", _enabled_portal)
+    monkeypatch.setattr("jobdigest.collect.load_feeds", _enabled_feed)
+    db = tmp_path / "jobs.db"
+    code = run(
+        db_path=db,
+        sleep=lambda _: None,
+        fetch_fn=boom_ats,
+        skip_ats=True,
+        portal_run_fn=portal_run_fn,
+        feed_run_fn=feed_run_fn,
+    )
+    assert code == 0
+    conn = connect(db)
+    try:
+        count = conn.execute("SELECT COUNT(*) AS n FROM jobs").fetchone()["n"]
+        run_row = conn.execute(
+            "SELECT stats_json FROM runs ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        stats = json.loads(run_row["stats_json"])
+        assert count == 1
+        assert stats["fetched"] == 2
+        assert stats["inserted"] == 1
+        assert stats["updated"] == 1
+    finally:
+        conn.close()
+
+
 def test_ats_only_skips_portals_and_feeds(monkeypatch, tmp_path):
     def fetch_fn(company, client, sleep):
         _ = company, client, sleep
@@ -190,8 +234,12 @@ def test_git_yaml_portals_and_feeds_disabled():
     feeds = yaml.safe_load(
         (ROOT / "config" / "feeds.example.yaml").read_text(encoding="utf-8")
     )
+    marketplaces = yaml.safe_load(
+        (ROOT / "config" / "marketplaces.example.yaml").read_text(encoding="utf-8")
+    )
     assert all(not row.get("enabled") for row in portals["portals"])
     assert all(not row.get("enabled") for row in feeds["feeds"])
+    assert all(not row.get("enabled") for row in marketplaces["marketplaces"])
     hunt = next(row for row in portals["portals"] if row["name"] == "huntyourtribe-intern")
     assert hunt["fetch"] == "dynamic"
     assert hunt["parser"] == "generic_cards"

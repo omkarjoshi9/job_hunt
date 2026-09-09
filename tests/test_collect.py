@@ -4,9 +4,9 @@ from pathlib import Path
 
 import yaml
 
-from jobdigest.ats.base import FetchResult, FetchStatus, NormalizedJob
-from jobdigest.collect import run
-from jobdigest.db import connect
+from jobdigest.ats.base import CompanyConfig, FetchResult, FetchStatus, NormalizedJob
+from jobdigest.collect import _board_url, run
+from jobdigest.db import connect, update_company_fetch, upsert_company
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -188,3 +188,121 @@ def test_collect_fail_sends_telegram(monkeypatch, tmp_path, capsys):
     assert posts[0]["json"]["chat_id"] == "42"
     assert posts[0]["json"]["text"] == "COLLECT FAILED"
     assert "parse_mode" not in posts[0]["json"]
+
+
+def test_collect_persists_workplace_hint(monkeypatch, tmp_path):
+    jobs = [
+        NormalizedJob(
+            title="Software Engineer Intern",
+            company="Example Corp",
+            location_raw="Pune",
+            apply_url="https://example.com/jobs/hint",
+            hosted_url="https://example.com/jobs/hint",
+            employment_hint="Intern",
+            workplace_hint="hybrid",
+            description_text="Intern role in Pune",
+            source="example",
+            ats="lever",
+            external_id="hint-1",
+            raw_json="{}",
+            fetched_at=datetime.now(timezone.utc),
+        )
+    ]
+
+    def fetch_fn(company, client, sleep):
+        _ = company, client, sleep
+        return FetchResult(FetchStatus.OK, 200, jobs)
+
+    monkeypatch.setattr("jobdigest.collect.load_companies", _enabled_companies)
+    monkeypatch.setattr("jobdigest.collect.load_portals", lambda: {"portals": []})
+    monkeypatch.setattr("jobdigest.collect.load_feeds", lambda: {"feeds": []})
+    db = tmp_path / "jobs.db"
+    assert run(db_path=db, sleep=lambda _: None, fetch_fn=fetch_fn) == 0
+    conn = connect(db)
+    try:
+        row = conn.execute(
+            "SELECT employment_hint, workplace_hint FROM jobs"
+        ).fetchone()
+        assert row["employment_hint"] == "Intern"
+        assert row["workplace_hint"] == "hybrid"
+    finally:
+        conn.close()
+
+
+def _example_company() -> CompanyConfig:
+    return CompanyConfig(
+        id="example",
+        name="Example Corp",
+        ats="greenhouse",
+        token="example",
+        enabled=True,
+    )
+
+
+def test_update_company_fetch_writes_resolved_url(tmp_path):
+    conn = connect(tmp_path / "jobs.db")
+    try:
+        cid = upsert_company(conn, "example", "Example Corp", "greenhouse", "example", True)
+        url = _board_url(_example_company())
+        update_company_fetch(
+            conn,
+            cid,
+            http_status=200,
+            job_count=1,
+            error=None,
+            resolved_url=url,
+        )
+        row = conn.execute(
+            "SELECT resolved_url FROM companies WHERE id = ?", (cid,)
+        ).fetchone()
+        assert row["resolved_url"] == url
+    finally:
+        conn.close()
+
+
+def test_collect_sets_resolved_url_on_ok(monkeypatch, tmp_path):
+    jobs = [_intern_job("https://example.com/jobs/resolved", "resolved")]
+
+    def fetch_fn(company, client, sleep):
+        _ = company, client, sleep
+        return FetchResult(FetchStatus.OK, 200, jobs)
+
+    monkeypatch.setattr("jobdigest.collect.load_companies", _enabled_companies)
+    monkeypatch.setattr("jobdigest.collect.load_portals", lambda: {"portals": []})
+    monkeypatch.setattr("jobdigest.collect.load_feeds", lambda: {"feeds": []})
+    db = tmp_path / "jobs.db"
+    assert run(db_path=db, sleep=lambda _: None, fetch_fn=fetch_fn) == 0
+    conn = connect(db)
+    try:
+        row = conn.execute("SELECT resolved_url FROM companies").fetchone()
+        assert row["resolved_url"] == _board_url(_example_company())
+    finally:
+        conn.close()
+
+
+def test_collect_sets_resolved_url_on_empty_dead_error(monkeypatch, tmp_path):
+    monkeypatch.setattr("jobdigest.collect.load_companies", _enabled_companies)
+    monkeypatch.setattr("jobdigest.collect.load_portals", lambda: {"portals": []})
+    monkeypatch.setattr("jobdigest.collect.load_feeds", lambda: {"feeds": []})
+    expected = _board_url(_example_company())
+    cases = [
+        (FetchStatus.EMPTY_BOARD, 200, None, 0),
+        (FetchStatus.DEAD_TOKEN, 404, "gone", 0),
+        (FetchStatus.ERROR, 500, "boom", 1),
+    ]
+    for status, http_status, error, want_code in cases:
+        db = tmp_path / f"jobs-{status.value}.db"
+
+        def fetch_fn(company, client, sleep, *, _status=status, _http=http_status, _err=error):
+            _ = company, client, sleep
+            return FetchResult(_status, _http, [], error=_err)
+
+        code = run(db_path=db, sleep=lambda _: None, fetch_fn=fetch_fn)
+        assert code == want_code
+        conn = connect(db)
+        try:
+            row = conn.execute("SELECT resolved_url FROM companies").fetchone()
+            assert row["resolved_url"] == expected, status
+        finally:
+            conn.close()
+

@@ -5,6 +5,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 
 DEFAULT_CRON = "30 3 * * *"
+DEFAULT_URGENT_CRON = "30 8 * * 1-5"
 TICK_MINUTES = 15
 
 
@@ -89,8 +90,35 @@ def is_due(
     return False
 
 
-def _emit(due: bool) -> None:
-    line = f"due={'true' if due else 'false'}\n"
+def due_slot(
+    *,
+    now: datetime | None = None,
+    event: str | None = None,
+    cron: str | None = None,
+    urgent_cron: str | None = None,
+) -> str | None:
+    event_name = event if event is not None else os.environ.get("GITHUB_EVENT_NAME", "")
+    if event_name != "schedule":
+        return "digest"
+    stamp = now or datetime.now(timezone.utc)
+    if is_due(now=stamp, event="schedule", cron=cron):
+        return "digest"
+    raw_u = (
+        urgent_cron
+        if urgent_cron is not None
+        else os.environ.get("JOBDIGEST_CRON_URGENT", "")
+    )
+    text = (raw_u or "").strip()
+    if text.lower() == "off":
+        return None
+    urgent_expr = text or DEFAULT_URGENT_CRON
+    if is_due(now=stamp, event="schedule", cron=urgent_expr):
+        return "urgent"
+    return None
+
+
+def _emit(due: bool, slot: str | None = None) -> None:
+    line = f"due={'true' if due else 'false'}\nslot={slot or ''}\n"
     path = (os.environ.get("GITHUB_OUTPUT") or "").strip()
     if path:
         with open(path, "a", encoding="utf-8") as handle:
@@ -100,11 +128,11 @@ def _emit(due: bool) -> None:
 
 def main() -> int:
     try:
-        due = is_due()
+        slot = due_slot()
     except ValueError as exc:
         print(f"cron error {exc}", file=sys.stderr)
         return 1
-    _emit(due)
+    _emit(slot is not None, slot)
     return 0
 
 

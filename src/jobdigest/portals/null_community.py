@@ -6,6 +6,7 @@ from jobdigest.ats.base import NormalizedJob
 from jobdigest.portals.generic import (
     _http_url,
     css_select,
+    first_href,
     first_text,
     jobs_from_cards,
     node_href,
@@ -28,6 +29,16 @@ def parse(page_or_html: Any, *, source: str, base_url: str) -> list[NormalizedJo
                 "location": first_text(card, ".meta"),
                 "company": source,
                 "description": node_text(card),
+            }
+        )
+    for item in css_select(root, ".job-item"):
+        cards.append(
+            {
+                "title": first_text(item, ".job-title"),
+                "url": first_href(item, ".job-title a", base=base_url),
+                "location": first_text(item, ".item-location"),
+                "company": first_text(item, ".company-title") or source,
+                "description": node_text(item),
             }
         )
     return jobs_from_cards(cards, source=source)

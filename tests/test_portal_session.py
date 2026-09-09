@@ -2,6 +2,7 @@ from jobdigest.portals.session import (
     FETCH_DYNAMIC,
     FETCH_HTTP,
     FETCH_STEALTH,
+    UA,
     SessionBundle,
     close_bundle,
     get_html,
@@ -106,6 +107,36 @@ def test_get_html_stealth_passes_solve_cloudflare():
         solve_cloudflare=True,
     )
     assert session.calls[0][2]["solve_cloudflare"] is True
+
+
+def test_get_html_http_merges_extra_headers():
+    session = _HttpSession()
+    get_html(
+        session,
+        "https://intern.hasjob.co/",
+        sleep=lambda _: None,
+        last_host={},
+        fetch=FETCH_HTTP,
+        extra_headers={"Accept": "application/json"},
+    )
+    headers = session.calls[0][2]["headers"]
+    assert headers["User-Agent"] == UA
+    assert headers["Accept"] == "application/json"
+
+
+def test_get_html_dynamic_merges_extra_headers():
+    session = _BrowserSession()
+    get_html(
+        session,
+        "https://intern.hasjob.co/",
+        sleep=lambda _: None,
+        last_host={},
+        fetch=FETCH_DYNAMIC,
+        extra_headers={"Accept": "application/json"},
+    )
+    extra = session.calls[0][2]["extra_headers"]
+    assert extra["User-Agent"] == UA
+    assert extra["Accept"] == "application/json"
 
 
 def test_open_bundle_empty_does_not_open_sessions():

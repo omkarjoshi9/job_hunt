@@ -1,0 +1,16 @@
+Subject: {{ title }} — {{ your_name }}
+
+Hi {{ contact_name or "there" }},
+
+I came across {{ company }}'s {{ title }} opening and wanted to reach out directly.
+
+{{ product_observation }}
+
+My core stack is {{ skills | join(", ") }}. I'm a {{ batch }} grad and would love to contribute at {{ company }}.
+{% if github_url %}
+You can find my work on GitHub: {{ github_url }}
+{% endif %}
+Would you be open to a brief chat this week?
+
+Best,
+{{ your_name }}

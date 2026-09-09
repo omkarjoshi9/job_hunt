@@ -15,4 +15,5 @@ fi
 
 "$PY" -m jobdigest collect --portal-fetch http --db data/jobs.db
 "$PY" -m jobdigest digest --db data/jobs.db
+"$PY" -m jobdigest contacts --db data/jobs.db
 "$PY" -m jobdigest sheet-sync --db data/jobs.db

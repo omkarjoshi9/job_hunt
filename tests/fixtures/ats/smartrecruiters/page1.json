@@ -1,0 +1,23 @@
+{
+  "offset": 2,
+  "limit": 2,
+  "totalFound": 3,
+  "content": [
+    {
+      "id": "sr-101",
+      "uuid": "uuid-101",
+      "name": "Software Engineer Intern duplicate",
+      "location": {"city": "Bengaluru", "country": "India", "remote": false},
+      "company": {"identifier": "example", "name": "Example Corp"}
+    },
+    {
+      "id": "sr-103",
+      "uuid": "uuid-103",
+      "name": "New Grad Software Engineer",
+      "location": {"city": "Pune", "country": "India", "remote": false},
+      "typeOfEmployment": {"id": "permanent", "label": "Full-time"},
+      "applyUrl": "https://www.smartrecruiters.com/example/sr-103",
+      "company": {"identifier": "example", "name": "Example Corp"}
+    }
+  ]
+}

@@ -3,3 +3,7 @@ feeds:
     url: https://www.python.org/jobs/feed/rss/
     enabled: false
     notes: "feedparser only; enable locally after probe."
+  - name: foss-united-rss
+    url: https://fossunited.org/jobs/rss.xml
+    enabled: true
+    notes: "Official RSS; keep HTML portal enabled; dedup by apply URL."
