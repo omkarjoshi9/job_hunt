@@ -49,6 +49,12 @@ _FOLLOWUP_CMDS = frozenset({"/followups", "/followup"})
 _HEALTH_CMDS = frozenset({"/health"})
 _CB = re.compile(r"^(o|s|a|h|w|m):(\d+)$")
 _CB_STATUS = {"s": "saved", "a": "applied", "h": "hidden"}
+_NOT_FOUND_TEXT = (
+    "I can't find that job in my database, so the button can't do anything. "
+    "This usually means the bot is pointed at a different (or reset) database than "
+    "the one the digest wrote to. Set DATABASE_URL to the same value for both."
+)
+_FAILED_TEXT = "Something went wrong handling that button. Try again in a moment."
 _STATUS_LINE = {
     "saved": "Saved.",
     "applied": "Marked applied.",
@@ -313,6 +319,7 @@ def _edit_card(
     msg = cq.get("message") if isinstance(cq.get("message"), dict) else {}
     message_id = msg.get("message_id") if isinstance(msg, dict) else None
     if not token or message_id is None:
+        _send_plain(body, http_post=http_post)
         return
     try:
         edit_message_text(
@@ -325,6 +332,7 @@ def _edit_card(
         )
     except TelegramError:
         log.error("telegram edit fail")
+        _send_plain(body, http_post=http_post)
 
 
 def _handle_slow_action(
@@ -365,6 +373,7 @@ def _handle_callback(
     guest = _guest_dicts([row], now=now) if row is not None else []
     if not guest:
         _answer(cq, http_post=http_post, text="Job not found.")
+        _send_plain(_NOT_FOUND_TEXT, http_post=http_post)
         return
     _answer(cq, http_post=http_post)
     card = render_card(guest[0], 1, now=now)
@@ -408,12 +417,24 @@ def handle_update(
     when = now or datetime.now(timezone.utc)
     own = conn is None
     if conn is None:
-        conn = connect(db_path)
+        try:
+            conn = connect(db_path)
+        except Exception:  # noqa: BLE001 - e.g. database unreachable
+            log.exception("bot database connect fail")
+            if cq is not None:
+                _answer(cq, http_post=http_post, text="Error.")
+                _send_plain(_FAILED_TEXT, http_post=http_post)
+            return
     try:
         if cq is not None:
-            _handle_callback(
-                cq, conn=conn, now=when, http_post=http_post, chat_fn=chat_fn
-            )
+            try:
+                _handle_callback(
+                    cq, conn=conn, now=when, http_post=http_post, chat_fn=chat_fn
+                )
+            except Exception:  # noqa: BLE001 - every tap must end visibly
+                log.exception("bot callback fail data=%s", cq.get("data"))
+                _answer(cq, http_post=http_post, text="Error.")
+                _send_plain(_FAILED_TEXT, http_post=http_post)
             return
         msg = update.get("message")
         if isinstance(msg, dict):
@@ -465,6 +486,54 @@ def poll_once(
     return last
 
 
+def drain(
+    *,
+    db_path: Path | None = None,
+    http_post: HttpPost | None = None,
+    max_batches: int = 20,
+) -> int:
+    """Handle every update Telegram is holding, then return. Returns updates handled."""
+    offset = 0
+    handled = 0
+    for _ in range(max_batches):
+        new_offset = poll_once(
+            offset=offset, db_path=db_path, http_post=http_post, timeout=0
+        )
+        if new_offset == offset:
+            break
+        handled += 1
+        offset = new_offset
+    return handled
+
+
+def run_for(
+    seconds: float,
+    *,
+    db_path: Path | None = None,
+    http_post: HttpPost | None = None,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+    timeout: int = 25,
+) -> None:
+    """Long-poll for up to ``seconds`` seconds, surviving transient errors."""
+    deadline = clock() + max(0.0, seconds)
+    offset = 0
+    while clock() < deadline:
+        # Never long-poll past the deadline.
+        wait = max(0, min(timeout, int(deadline - clock())))
+        try:
+            offset = poll_once(
+                offset=offset, db_path=db_path, http_post=http_post, timeout=wait
+            )
+        except KeyboardInterrupt:
+            return
+        except TelegramError:
+            sleep(2)
+        except Exception:
+            log.exception("bot poll fail")
+            sleep(2)
+
+
 def main(argv: list[str] | None = None) -> int:
     load_dotenv()
     configure()
@@ -474,8 +543,28 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="SQLite path (default DATABASE_PATH or data/jobs.db)",
     )
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--once", action="store_true", help="handle pending button taps, then exit"
+    )
+    mode.add_argument(
+        "--max-seconds",
+        type=float,
+        default=None,
+        help="long-poll for at most this many seconds, then exit (for CI)",
+    )
     args = parser.parse_args(argv)
     db_path = Path(args.db) if args.db else None
+    if args.once:
+        log.info("bot drain start")
+        handled = drain(db_path=db_path)
+        log.info("bot drain done batches=%s", handled)
+        return 0
+    if args.max_seconds is not None:
+        log.info("bot poller start max_seconds=%s", args.max_seconds)
+        run_for(args.max_seconds, db_path=db_path)
+        log.info("bot poller done")
+        return 0
     offset = 0
     log.info("bot poller start")
     while True:
@@ -488,7 +577,6 @@ def main(argv: list[str] | None = None) -> int:
         except Exception:
             log.exception("bot poll fail")
             time.sleep(2)
-    return 0
 
 
 if __name__ == "__main__":

@@ -1,3 +1,4 @@
+from dataclasses import replace
 import json
 import re
 
@@ -55,7 +56,7 @@ def test_score_persists_relevant_and_false(tmp_path):
         _collect_ok(conn)
         ids = []
         for i in range(13):
-            title = "Software Engineer Intern" if i < 3 else f"Campus Intern ZZJunk{i:02d}"
+            title = "Software Engineer Intern" if i < 3 else f"Campus Software Intern ZZJunk{i:02d}"
             company = f"Co{i:02d}"
             ids.append(
                 _pass_job(
@@ -642,7 +643,7 @@ def test_score_yoe_in_fence_not_guest_intern_neighbor_stays(tmp_path):
             models.score_model,
             models.score_prompt_version,
             profile.digest_max,
-            profile=profile,
+            profile=replace(profile, digest_min_quality=0.0),
         )
         guest_ids = {int(g["id"]) for g in guests}
         assert int(intern_row["relevant"]) == 1

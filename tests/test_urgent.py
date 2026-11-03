@@ -29,6 +29,13 @@ def _collect_ok(conn):
     finish_run(conn, rid, "ok", {})
 
 
+STRONG_JD = (
+    "Responsibilities: you will build backend services in Python and FastAPI, "
+    "ship APIs on AWS with Docker, and work on LangChain RAG pipelines and security "
+    "tooling. We hire freshers and new grads in Pune. " * 3
+)
+
+
 def _pass_job(conn, profile, *, url: str, ext: str, company: str, first_seen: str | None = None):
     action, jid = upsert_job(
         conn,
@@ -39,9 +46,9 @@ def _pass_job(conn, profile, *, url: str, ext: str, company: str, first_seen: st
         external_id=ext,
         company_id=None,
         company=company,
-        title="Software Engineer Intern",
+        title="Backend Software Engineer New Grad",
         location_raw="Pune",
-        description_text="Intern role in Pune",
+        description_text=STRONG_JD,
         raw_json="{}",
         ats="greenhouse",
         employment_hint="intern",

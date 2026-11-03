@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from datetime import datetime, timezone
 from typing import Any
 
+from jobdigest.config import Profile
+from jobdigest.fit import quality_score
 from jobdigest.normalize import normalize_company
 
 RECENCY_WINDOW_DAYS = 7.0
@@ -145,11 +147,16 @@ def blend_rank(
     relocate: Sequence[str],
     now: datetime,
     priors: Mapping[str, float] | None = None,
+    profile: Profile | None = None,
 ) -> float:
-    llm = float(row["score"] or 0)
+    """Ranking key. With a profile: fit/LLM quality (freshness included) + location
+    + prior. Without one: the legacy LLM score + first-seen recency."""
+    if profile is not None:
+        base = quality_score(row, profile, now)
+    else:
+        base = float(row["score"] or 0) + recency_boost(row["first_seen_at"], now)
     return (
-        llm
-        + recency_boost(row["first_seen_at"], now)
+        base
         + location_pref(
             row["location_raw"] or "",
             row["title"] or "",
@@ -167,11 +174,100 @@ def sort_rows(
     relocate: Sequence[str],
     now: datetime,
     priors: Mapping[str, float] | None = None,
+    profile: Profile | None = None,
 ) -> list[RowLike]:
     return sorted(
         rows,
         key=lambda r: (
-            -blend_rank(r, home=home, relocate=relocate, now=now, priors=priors),
+            -blend_rank(
+                r, home=home, relocate=relocate, now=now, priors=priors, profile=profile
+            ),
             int(r["id"]),
         ),
     )
+
+
+COOLDOWN_BYPASS_QUALITY = 85.0
+
+
+def company_key(name: Any) -> str:
+    return normalize_company(str(name or "")).casefold()
+
+
+_NAME_SUFFIXES = frozenset(
+    {"us", "usa", "uk", "eu", "india", "in", "global", "inc", "llc", "ltd", "corp",
+     "limited", "pvt", "private", "gmbh", "sa", "emea", "apac"}
+)
+
+
+def _alias(key: str, known: Collection[str]) -> str:
+    """Map "episode six us" onto an already-seen "episode six".
+
+    Only region/legal suffixes merge; a real sub-brand ("google cloud india" vs
+    "google") stays a separate company.
+    """
+    words = key.split()
+    for other in known:
+        o = other.split()
+        long_, short = (words, o) if len(words) >= len(o) else (o, words)
+        if long_[: len(short)] == short and set(long_[len(short):]) <= _NAME_SUFFIXES:
+            return other
+    return key
+
+
+def _age_days(row: RowLike, now: datetime) -> float | None:
+    for key in ("posted_at", "first_seen_at"):
+        try:
+            raw = row[key]
+        except (KeyError, IndexError, TypeError):
+            continue
+        dt = _try_parse_iso(str(raw)) if raw and str(raw).strip() else None
+        if dt is not None:
+            when = now if now.tzinfo is not None else now.replace(tzinfo=timezone.utc)
+            return max(0.0, (when - dt).total_seconds() / 86400.0)
+    return None
+
+
+def select_diverse(
+    rows: Sequence[RowLike],
+    limit: int,
+    *,
+    profile: Profile,
+    now: datetime,
+    recent_companies: Collection[str] = (),
+) -> list[RowLike]:
+    """Pick the best rows (already sorted) for a digest.
+
+    Drops stale postings and anything below the quality bar, keeps at most
+    ``digest_per_company`` roles per company (and ``digest_per_portal`` per
+    aggregator), and skips companies already sent within the cooldown unless the
+    job is exceptional. Returns fewer rows rather than padding.
+    """
+    chosen: list[RowLike] = []
+    per_company: dict[str, int] = {}
+    per_portal: dict[str, int] = {}
+    cooling = {company_key(c) for c in recent_companies}
+    for row in rows:
+        if len(chosen) >= max(int(limit), 0):
+            break
+        age = _age_days(row, now)
+        if age is not None and age > profile.digest_max_age_days:
+            continue
+        quality = quality_score(row, profile, now)
+        if quality < profile.digest_min_quality:
+            continue
+        ats = str(row["ats"] or "").lower()
+        if ats in {"portal", "rss", "marketplace"}:
+            key = str(row["source"] or "")
+            if per_portal.get(key, 0) >= profile.digest_per_portal:
+                continue
+            per_portal[key] = per_portal.get(key, 0) + 1
+        else:
+            key = _alias(company_key(row["company"]), [*per_company, *cooling])
+            if key and key in cooling and quality < COOLDOWN_BYPASS_QUALITY:
+                continue
+            if key and per_company.get(key, 0) >= profile.digest_per_company:
+                continue
+            per_company[key] = per_company.get(key, 0) + 1
+        chosen.append(row)
+    return chosen

@@ -21,6 +21,7 @@ from jobdigest.db import (
     urgent_sent_count,
 )
 from jobdigest.envfile import load_dotenv
+from jobdigest.fit import fit_score, quality_score
 from jobdigest.logutil import configure, get_logger
 from jobdigest.openrouter import default_chat
 from jobdigest.score import run as score_run
@@ -34,6 +35,8 @@ from jobdigest.telegram import split_message
 
 ChatFn = Callable[..., str]
 TelegramHttpPost = Callable[..., object]
+URGENT_MIN_FIT = 70.0
+
 log = get_logger("digest")
 
 
@@ -110,7 +113,7 @@ def _legitimacy_codes(reasons_json: str | None) -> list[str]:
     return out
 
 
-def _guest_dicts(rows, *, now: datetime) -> list[dict]:
+def _guest_dicts(rows, *, now: datetime, profile: Profile | None = None) -> list[dict]:
     out: list[dict] = []
     for row in rows:
         reasons = _reasons(_row_get(row, "reasons_json", None))
@@ -126,7 +129,11 @@ def _guest_dicts(rows, *, now: datetime) -> list[dict]:
                 "title": row["title"] or "",
                 "location": row["location_raw"] or "",
                 "url": _digest_url(row["apply_url"]),
-                "score": float(row["score"] or 0),
+                "score": round(
+                    quality_score(row, profile, now)
+                    if profile is not None
+                    else float(row["score"] or 0)
+                ),
                 "why": reasons["why"],
                 "first_seen_at": first_seen,
                 "ats": ats,
@@ -240,15 +247,18 @@ def maybe_send_urgent(
             continue
         if not _within_urgent_lookback(_row_get(row, "first_seen_at", None), now):
             continue
-        score = float(_row_get(row, "score", 0) or 0)
-        if not _watchlisted(row, profile, meta) and score < min_score:
+        # Urgent means exceptional: a high LLM score AND a strong deterministic fit.
+        llm_score = float(_row_get(row, "score", 0) or 0)
+        if not _watchlisted(row, profile, meta) and (
+            llm_score < min_score or fit_score(row, profile, now) < URGENT_MIN_FIT
+        ):
             continue
         candidates.append(row)
     sent_ids: list[int] = []
     for row in candidates:
         if len(sent_ids) >= budget:
             break
-        guest = _guest_dicts([row], now=now)
+        guest = _guest_dicts([row], now=now, profile=profile)
         if not guest:
             continue
         job_id = int(row["id"])
@@ -307,7 +317,7 @@ def _run_digest(
         profile=profile,
         now=now,
     )
-    guest = _guest_dicts(rows, now=now)
+    guest = _guest_dicts(rows, now=now, profile=profile)
     titles = [f"{g['company']}: {g['title']}" for g in guest]
     log.info("digest guests=%s titles=%s", len(guest), titles)
     if not guest:

@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from jobdigest.paths import repo_root
 
 log = logging.getLogger("jobdigest.config")
 
@@ -63,6 +65,12 @@ class Profile:
     urgent_score_min: int
     urgent_daily_cap: int
     github_url: str = ""
+    top_companies: list[str] = field(default_factory=list)
+    digest_min_quality: float = 50.0
+    digest_per_company: int = 1
+    digest_per_portal: int = 2
+    digest_company_cooldown_days: int = 3
+    digest_max_age_days: int = 21
 
 
 @dataclass(frozen=True)
@@ -108,11 +116,54 @@ def load_profile() -> Profile:
         urgent_score_min=_int_field(d, "urgent_score_min", 85),
         urgent_daily_cap=_int_field(d, "urgent_daily_cap", 3),
         github_url=str(d.get("github_url") or ""),
+        top_companies=[str(x) for x in (d.get("top_companies") or [])],
+        digest_min_quality=float(d.get("digest_min_quality", 50.0)),
+        digest_per_company=_int_field(d, "digest_per_company", 1),
+        digest_company_cooldown_days=_int_field(d, "digest_company_cooldown_days", 3),
+        digest_max_age_days=_int_field(d, "digest_max_age_days", 21),
+        digest_per_portal=_int_field(d, "digest_per_portal", 2),
     )
 
 
 def load_companies() -> dict[str, Any]:
     return _read_yaml("companies.yaml")
+
+
+def discovered_boards_path() -> Path | None:
+    """data/boards_india.tsv (written by ``python -m jobdigest.expand``).
+
+    JOBDIGEST_DISCOVERED_BOARDS overrides the path; "off" disables the feature.
+    """
+    raw = (os.environ.get("JOBDIGEST_DISCOVERED_BOARDS") or "").strip()
+    if raw.lower() in {"off", "none", "0", "false"}:
+        return None
+    return Path(raw) if raw else repo_root() / "data" / "boards_india.tsv"
+
+
+def load_discovered_boards(path: Path | None = None) -> list[dict[str, Any]]:
+    """Company rows for the boards found by ``expand`` (empty when there are none)."""
+    path = path or discovered_boards_path()
+    if path is None or not path.is_file():
+        return []
+    rows: list[dict[str, Any]] = []
+    for i, line in enumerate(path.read_text(encoding="utf-8").splitlines()):
+        parts = line.split("\t")
+        if i == 0 and parts[:1] == ["company"]:
+            continue
+        if len(parts) < 3 or not parts[2].strip():
+            continue
+        name, ats, token = parts[0].strip(), parts[1].strip().lower(), parts[2].strip()
+        rows.append(
+            {
+                "id": f"{ats}:{token}",
+                "name": name or token,
+                "ats": ats,
+                "token": token,
+                "enabled": True,
+                "notes": "discovered by jobdigest.expand",
+            }
+        )
+    return rows
 
 
 def load_portals() -> dict[str, Any]:

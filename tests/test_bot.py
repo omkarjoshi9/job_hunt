@@ -1259,7 +1259,9 @@ def test_open_callback_missing_job_answers_message(monkeypatch, tmp_path):
         conn.close()
     answers = [p for p in posts if p["url"].endswith("answerCallbackQuery")]
     assert len(answers) == 1 and answers[0]["json"]["text"] == "Job not found."
-    assert not any(p["url"].endswith("sendMessage") for p in posts)
+    # A toast vanishes, so the user also gets a lasting explanation.
+    sent = [p["json"]["text"] for p in posts if p["url"].endswith("sendMessage")]
+    assert len(sent) == 1 and "DATABASE_URL" in sent[0]
 
 
 def test_slow_action_exception_sends_message(monkeypatch, tmp_path):

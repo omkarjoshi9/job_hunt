@@ -109,10 +109,10 @@ def test_digest_three_relevant_not_junk(tmp_path, capsys):
         companies = ["Acme", "Globex", "Initech"]
         for i in range(13):
             if i < 3:
-                title = f"{companies[i]} Intern Role"
+                title = f"{companies[i]} Software Intern Role"
                 company = companies[i]
             else:
-                title = f"ZZJunkTitle{i:02d} Intern"
+                title = f"ZZJunkTitle{i:02d} Software Intern"
                 company = f"JunkCo{i:02d}"
                 junk_titles.append(title)
             ids.append(

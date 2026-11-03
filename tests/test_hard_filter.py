@@ -1,3 +1,4 @@
+import pytest
 from jobdigest.config import load_profile
 from jobdigest.hard_filter import hard_filter
 
@@ -99,13 +100,14 @@ def test_software_engineer_india_0_1_pass():
     assert status == "pass"
 
 
-def test_zero_to_three_years_not_yoe_reject():
+def test_zero_to_three_years_is_not_a_fresher_role():
+    # Not a yoe hit (range starts at 0) but also no entry-level signal.
     status, reason = _check(
         title="Software Engineer",
         location_raw="Bengaluru",
         description_text="0-3 years",
     )
-    assert status == "pass"
+    assert (status, reason) == ("reject", "level_unknown")
 
 
 def test_three_to_five_years_yoe_reject():
@@ -518,7 +520,7 @@ def test_two_to_eight_yoe_not_range_match():
 
 def test_tech_leadership_intern_not_title_reject():
     status, reason = _check(
-        title="Tech Leadership Intern",
+        title="Tech Leadership Engineering Intern",
         location_raw="Pune",
     )
     assert status == "pass"
@@ -527,7 +529,7 @@ def test_tech_leadership_intern_not_title_reject():
 
 def test_fellowship_program_intern_not_title_reject():
     status, reason = _check(
-        title="Fellowship Program Intern",
+        title="Fellowship Program Software Intern",
         location_raw="Bengaluru",
     )
     assert status == "pass"
@@ -536,7 +538,7 @@ def test_fellowship_program_intern_not_title_reject():
 
 def test_head_office_intern_not_title_reject():
     status, reason = _check(
-        title="Head Office Intern",
+        title="Head Office Software Intern",
         location_raw="Pune",
     )
     assert status == "pass"
@@ -635,3 +637,76 @@ def test_over_n_years_experience_rejects():
             title="Software Engineer Intern", location_raw="Pune", description_text=text
         )
         assert (status, reason) == ("reject", "yoe"), text
+
+
+# --- quality gates -------------------------------------------------------------
+
+
+def _gate(title, company="Acme", description_text="", location_raw="Bengaluru, India"):
+    from jobdigest.config import load_profile
+    from jobdigest.hard_filter import hard_filter
+
+    return hard_filter(
+        load_profile(),
+        title=title,
+        location_raw=location_raw,
+        description_text=description_text,
+        company=company,
+    )
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "HR Intern - Talent Acquisition",
+        "Content Writer Intern",
+        "Business Development Executive - Fresher",
+        "Social Media Intern",
+        "Go-To-Market Intern",
+        "Intern - Secretarial Compliance",
+        "Industrial Trainee - Finance & Accounting",
+        "Evaluation & Insights Intern, AI Delivery",
+    ],
+)
+def test_non_engineering_interns_are_rejected(title):
+    assert _gate(title)[0] == "reject"
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Software Engineer II",
+        "SDE 2 Infra",
+        "Security Engineer 2",
+        "Software Engineer Architect - AI Agents",
+        "Staff Engineer",
+    ],
+)
+def test_experienced_titles_are_rejected(title):
+    assert _gate(title, description_text="freshers welcome")[0] == "reject"
+
+
+@pytest.mark.parametrize(
+    "title",
+    ["Software Engineer, Intern", "Software Engineer, New Grad", "Security Engineer Intern", "AI Researcher Intern", "Backend Engineer Intern"],
+)
+def test_real_entry_level_engineering_roles_pass(title):
+    assert _gate(title) == ("pass", "ok")
+
+
+def test_bare_software_engineer_needs_entry_level_evidence():
+    assert _gate("Software Engineer", description_text="Own the platform.") == ("reject", "level_unknown")
+    assert _gate("Software Engineer", description_text="We hire freshers and new grads.") == ("pass", "ok")
+
+
+def test_one_to_two_years_is_rejected_for_non_interns():
+    assert _gate("Software Engineer", description_text="1-2 years of experience")[1] == "yoe"
+    assert _gate("Software Engineer", description_text="1+ years of experience")[1] == "yoe"
+
+
+def test_frontend_and_qa_only_at_top_companies():
+    assert _gate("Frontend Engineer Intern", company="Random Startup") == ("reject", "function_low")
+    assert _gate("QA Intern", company="Random Startup") == ("reject", "function_low")
+    assert _gate("Frontend Engineer Intern", company="Stripe") == ("pass", "ok")
+    assert _gate("SDET Intern", company="Google") == ("pass", "ok")
+    assert _gate("Full Stack Engineer Intern", company="Random Startup") == ("pass", "ok")

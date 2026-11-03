@@ -65,6 +65,13 @@ def _system_prompt(profile: Profile) -> str:
         f"Set relevant=false when the description requires {profile.min_yoe_reject} or more "
         "years of professional experience, even if the title is Software Engineer. "
         "If stack_ok is false or kill is set, relevant must be false.\n"
+        "SCORING MUST DISCRIMINATE. Do not give most jobs the same score. Typical relevant "
+        "jobs land at 40-75. Reserve 85+ for roles that are ALL of: engineering, explicitly "
+        "entry-level (new grad, fresher, intern), in India, and clearly overlapping the "
+        "candidate's skills. Use 20-40 for relevant-but-weak matches (frontend/QA/mobile, "
+        "vague scope, no stack overlap). Prefer full-time new-grad roles over internships "
+        "when otherwise equal. The `why` field must name the concrete reason (which of the "
+        "candidate's skills or what stack/team the job uses), never just restate the title.\n"
         f"{_FEW_SHOT_ANCHORS}"
     )
 
@@ -232,14 +239,13 @@ def _persist_item(conn, row, parsed, models, profile) -> tuple[bool, bool]:
     return True, relevant
 
 
-def _score_batch(
-    conn, batch, offset, *, system, models, profile, chat_fn, api_key
-) -> tuple[int, int] | None:
-    """Score one batch. Returns (scored, relevant) or None if the batch failed.
+def _request_items(
+    batch, *, system, models, chat_fn, api_key, offset, label: str
+) -> list | None:
+    """One LLM call for ``batch``. None when the call or its JSON failed.
 
     Raises _InvalidModel when the model guard refuses the configured model.
     """
-    batch_ids = {int(r["id"]) for r in batch}
     try:
         raw = chat_fn(
             _build_messages(system, batch),
@@ -248,27 +254,51 @@ def _score_batch(
             json_mode=True,
         )
     except OpenRouterError:
-        # Skip this batch; its jobs stay unscored and retry next run.
-        log.warning("score batch fail OpenRouterError offset=%s", offset)
+        log.warning("score %s fail OpenRouterError offset=%s", label, offset)
         return None
     except ValueError as exc:
         raise _InvalidModel from exc
-
     items = _parse_jobs_payload(raw)
     if items is None:
-        log.warning("score batch fail invalid JSON offset=%s", offset)
-        return None
+        log.warning("score %s fail invalid JSON offset=%s", label, offset)
+    return items
 
+
+def _score_batch(
+    conn, batch, offset, *, system, models, profile, chat_fn, api_key
+) -> tuple[int, int] | None:
+    """Score one batch. Returns (scored, relevant) or None if the batch failed.
+
+    Jobs the model silently omitted are re-asked once in a smaller follow-up call.
+    Raises _InvalidModel when the model guard refuses the configured model.
+    """
+    ask = dict(system=system, models=models, chat_fn=chat_fn, api_key=api_key, offset=offset)
     by_id = {int(r["id"]): r for r in batch}
+    items = _request_items(batch, label="batch", **ask)
+    if items is None:
+        return None  # its jobs stay unscored and retry next run
+
     scored = relevant_n = 0
-    for item in items:
-        parsed = _score_item(item, batch_ids)
-        if parsed is None:
-            continue
-        _, relevant = _persist_item(conn, by_id.get(parsed[0]), parsed, models, profile)
-        scored += 1
-        if relevant:
-            relevant_n += 1
+    done: set[int] = set()
+
+    def persist(raw_items, ids: set[int]) -> None:
+        nonlocal scored, relevant_n
+        for item in raw_items:
+            parsed = _score_item(item, ids)
+            if parsed is None or parsed[0] in done:
+                continue
+            done.add(parsed[0])
+            _, relevant = _persist_item(conn, by_id.get(parsed[0]), parsed, models, profile)
+            scored += 1
+            relevant_n += 1 if relevant else 0
+
+    persist(items, set(by_id))
+    missing = [by_id[i] for i in by_id if i not in done]
+    if missing:
+        log.info("score retry omitted=%s offset=%s", len(missing), offset)
+        again = _request_items(missing, label="retry", **ask)
+        if again is not None:
+            persist(again, {int(r["id"]) for r in missing})
     return scored, relevant_n
 
 

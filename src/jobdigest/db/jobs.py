@@ -355,6 +355,7 @@ def _build_job_row(
         location_raw=location_raw,
         description_text=description_text,
         employment_hint=employment_hint,
+        company=raw_company,
     )
     job_title = normalize_title(raw_title) or "(untitled)"
     job_company = normalize_company(raw_company) if raw_company else raw_company

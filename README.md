@@ -186,13 +186,15 @@ Do not put keys in workflow YAML or git. Do not commit `.env`, `config/*.yaml` (
 
 ### Telegram bot worker
 
-Actions **push** the morning digest (ranked list + numeric pager) and weekday urgent cards. The hosted pipeline also pre-fills hiring-manager `contacts` for those guest jobs (fail-soft; missing GitHub token or 403 is not `COLLECT FAILED`). Callbacks (`o:` open card, `s:` save, `a:` applied, `h:` hide, `w:` Why me?, `m:` Mail draft) and slash commands (`/followups`, `/health`) need a long-poll worker. GitHub Actions cannot hold `getUpdates`. Run **one** replica on a laptop or small VM (two pollers fight):
+Actions **push** the morning digest (ranked list + numeric pager) and weekday urgent cards. The hosted pipeline also pre-fills hiring-manager `contacts` for those guest jobs (fail-soft; missing GitHub token or 403 is not `COLLECT FAILED`). Callbacks (`o:` open card, `s:` save, `a:` applied, `h:` hide, `w:` Why me?, `m:` Mail draft) and slash commands (`/followups`, `/health`) need a long-poll worker, otherwise tapping a button does nothing. The hosted `bot.yml` workflow runs it: it long-polls for ~55 minutes and restarts hourly (taps made in the gap wait in Telegram and are handled at the next start). It needs the same `DATABASE_URL` as the pipeline and fails loudly without it, because the bot must see the jobs the digest sent. Run only **one** poller at a time (two fight), so do not also run it locally while `bot.yml` is active. Locally:
 
 ```bash
-python -m jobdigest.bot --db data/jobs.db
+python -m jobdigest.bot --db data/jobs.db      # forever
+python -m jobdigest.bot --once                 # handle pending taps, then exit
+python -m jobdigest.bot --max-seconds 3300     # what bot.yml runs
 ```
 
-Omit `--db` when `DATABASE_URL` is set (Neon). Apply is a URL button; status actions edit in place. Hide removes the job from the next guest list without marking it applied. Mail posts a Subject / To / Body draft plus a `mailto:` link when an email exists — send it yourself; there is no SMTP. Guest jobs only (last digest `job_ids`). Optional `github_url` on the profile is included in the draft when set. `start.sh` and `pipeline.yml` never start this process.
+Omit `--db` when `DATABASE_URL` is set (Neon). Apply is a URL button; status actions edit in place. Hide removes the job from the next guest list without marking it applied. Mail posts a Subject / To / Body draft plus a `mailto:` link when an email exists — send it yourself; there is no SMTP. Guest jobs only (last digest `job_ids`). Optional `github_url` on the profile is included in the draft when set. `start.sh` and `pipeline.yml` never start this process. Every button tap ends with a lasting message (an edited card or a new message), including when the job or database cannot be found.
 
 ### Neon
 
@@ -223,14 +225,21 @@ Digest prints Telegram plain text to stdout (Actions logs) and POSTs the same pa
 
 Requires `OPENROUTER_API_KEY` in `.env`. Use two paid models in local `config/models.yaml`. Collect stays LLM-free. The scorer receives skills, location, and role types from the profile — not GPA.
 
-Hard filters run in Python at every job upsert: reject senior titles, reject 3+ years of experience, reject US-remote work-auth language, require India-related location text, and require an intern or new-grad title. Only `pass` jobs are scored.
+Hard filters run in Python at every job upsert: reject senior and experienced titles (Engineer II/III, Architect), reject any ask of 1+ years for non-intern roles (3+ for internships), reject US-remote work-auth language, require India-related location text, require an intern or new-grad title (or entry-level wording in the job text for a bare "Software Engineer"), and require an engineering function (HR, talent, content, sales, finance and similar titles are rejected). Frontend, QA and mobile roles pass only at top-tier companies (`tiers.py`, extend with `top_companies` in the profile). Only `pass` jobs are scored.
+
+Ranking uses a deterministic fit score (role family, new grad above intern, skill overlap with the profile, company and source trust, real posting date) blended 65/35 with the LLM score, so the LLM giving everything 90 no longer decides the order. The digest stops at `digest_min_quality` (default 50) rather than padding, and caps `digest_per_company` / `digest_per_portal` (default 2 each). Urgent alerts need both `urgent_score_min` and a fit of 70+.
+
+### Widening the pool
+
+`python -m jobdigest.expand` probes the Greenhouse, Lever and Ashby tokens in `data/ats_board_tokens_gla.tsv` once and writes the boards that list India entry-level engineering roles to `data/boards_india.tsv`. `collect` fetches those boards automatically next to `companies.yaml` (skip with `--skip-discovered`). Re-run `expand` now and then to refresh the list.
 
 ## CLI
 
 ```
 python -m jobdigest collect|score|digest|sheet-append|sheet-sync
 python -m jobdigest digest --urgent-only
-python -m jobdigest.bot
+python -m jobdigest.bot [--once | --max-seconds N]
+python -m jobdigest.expand
 python -m jobdigest.probe
 python -m jobdigest.discover
 ```

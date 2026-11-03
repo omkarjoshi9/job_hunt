@@ -281,8 +281,14 @@ def test_guest_rows_keeps_pass_relevant_score_zero(tmp_path):
             0.0,
             {"why": "fit"},
         )
+        from dataclasses import replace
+
         guests = guest_rows(
-            conn, models.score_model, models.score_prompt_version, 12, profile=profile
+            conn,
+            models.score_model,
+            models.score_prompt_version,
+            12,
+            profile=replace(profile, digest_min_quality=0.0),
         )
         assert [int(g["id"]) for g in guests] == [jid]
     finally:

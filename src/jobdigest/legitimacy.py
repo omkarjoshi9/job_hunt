@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
@@ -108,6 +109,32 @@ def _has_responsibility_cues(text: str) -> bool:
     return any(cue in folded for cue in _RESPONSIBILITY_CUES)
 
 
+_GENERIC_NAME_WORDS = frozenset(
+    {"careers", "career", "jobs", "hiring", "recruiting", "talent", "team", "inc",
+     "labs", "technologies", "technology", "group", "holdings", "the", "co", "ltd"}
+)
+
+
+def _core_name(name: str) -> tuple[set[str], str]:
+    words = [w for w in re.split(r"[^a-z0-9]+", name.casefold()) if w]
+    core = [w for w in words if w not in _GENERIC_NAME_WORDS] or words
+    return set(core), "".join(core)
+
+
+def _names_differ(a: str, b: str) -> bool:
+    """True only when the two company names are genuinely different.
+
+    "HackerRank Careers" vs "hackerrank" and "Paytm Payments Services" vs
+    "paytmpayments" are the same company, not a mismatch.
+    """
+    wa, ja = _core_name(a)
+    wb, jb = _core_name(b)
+    if wa <= wb or wb <= wa:
+        return False
+    short, long_ = sorted((ja, jb), key=len)
+    return not (len(short) >= 4 and long_.startswith(short))
+
+
 def evaluate_structural(
     job: Any,
     *,
@@ -119,7 +146,7 @@ def evaluate_structural(
     if _company_id_set(job):
         job_name = normalize_company(str(raw_company)).casefold()
         board_name = normalize_company(company_display_name).casefold()
-        if job_name and board_name and job_name != board_name:
+        if job_name and board_name and _names_differ(job_name, board_name):
             codes.append("company_mismatch")
 
     description = str(_get(job, "description_text") or "")

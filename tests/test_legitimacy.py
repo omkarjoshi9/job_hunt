@@ -1,3 +1,4 @@
+from dataclasses import replace
 import json
 from datetime import datetime, timedelta, timezone
 
@@ -79,14 +80,17 @@ def _score(conn, job_id: int, *, relevant: bool = True, score: float = 90.0) -> 
     )
 
 
-def _guests(conn, *, now: datetime | None = None):
+def _guests(conn, *, now: datetime | None = None, max_age_days: int | None = None):
     models = load_models()
+    profile = load_profile()
+    if max_age_days is not None:
+        profile = replace(profile, digest_max_age_days=max_age_days)
     return guest_rows(
         conn,
         models.score_model,
         models.score_prompt_version,
         12,
-        profile=load_profile(),
+        profile=profile,
         now=now or NOW,
     )
 
@@ -150,7 +154,8 @@ def test_active_91d_relevant_is_guest_with_chip(tmp_path):
         )
         conn.commit()
         _score(conn, jid)
-        rows = _guests(conn)
+        assert jid not in [int(r["id"]) for r in _guests(conn)], "default window drops stale"
+        rows = _guests(conn, max_age_days=365)
         ids = [int(row["id"]) for row in rows]
         assert jid in ids
         guest = _guest_dicts(rows, now=NOW)

@@ -15,6 +15,7 @@ def _cmd_collect(args: argparse.Namespace) -> int:
             db_path=db,
             ats_only=bool(args.ats_only),
             skip_ats=bool(getattr(args, "skip_ats", False)),
+            skip_discovered=bool(getattr(args, "skip_discovered", False)),
             skip_portals=bool(getattr(args, "skip_portals", False)),
             skip_feeds=bool(getattr(args, "skip_feeds", False)),
             skip_marketplaces=bool(getattr(args, "skip_marketplaces", False)),
@@ -86,6 +87,7 @@ def _add_collect_parser(sub) -> None:
     )
     _add_flag(p, "--ats-only", "skip portals, feeds, and marketplaces")
     _add_flag(p, "--skip-ats", "skip companies.yaml ATS fetch")
+    _add_flag(p, "--skip-discovered", "skip boards found by jobdigest.expand")
     _add_flag(p, "--skip-portals", "skip portals.yaml")
     _add_flag(p, "--skip-feeds", "skip feeds.yaml")
     _add_flag(p, "--skip-marketplaces", "skip marketplaces.yaml")

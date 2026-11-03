@@ -87,7 +87,7 @@ def test_hard_filter_uses_raw_campus_title(tmp_path):
             external_id="c1",
             company_id=None,
             company="Acme",
-            title="Campus Hire",
+            title="Campus Hire Software Engineer",
             location_raw="Pune",
             description_text="Campus hire in Pune India intern software",
             raw_json="{}",
@@ -97,8 +97,8 @@ def test_hard_filter_uses_raw_campus_title(tmp_path):
             "SELECT title, raw_title, hard_status FROM jobs WHERE id = ?",
             (jid,),
         ).fetchone()
-        assert row["raw_title"] == "Campus Hire"
-        assert row["title"] == "Hire"
+        assert row["raw_title"] == "Campus Hire Software Engineer"
+        assert row["title"] == "Hire Software Engineer"
         assert row["hard_status"] == "pass"
     finally:
         conn.close()

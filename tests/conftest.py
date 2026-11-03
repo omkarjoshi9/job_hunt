@@ -10,6 +10,7 @@ def _no_live_telegram(monkeypatch):
     Tests that exercise sending inject `http_post` (or set the env vars and
     monkeypatch `jobdigest.telegram._httpx_post` themselves).
     """
+    monkeypatch.setenv("JOBDIGEST_DISCOVERED_BOARDS", "off")  # tests opt in explicitly
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
     monkeypatch.delenv("JOBDIGEST_REQUIRE_TELEGRAM", raising=False)

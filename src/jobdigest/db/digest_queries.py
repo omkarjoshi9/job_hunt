@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from jobdigest.config import Profile
 from jobdigest.db._common import Conn, RowLike
 from jobdigest.normalize import normalize_company
-from jobdigest.rank import PRIOR_POSITIVE, sort_rows
+from jobdigest.rank import PRIOR_POSITIVE, select_diverse, sort_rows
 
 MIN_OUTCOMES = 20
 OUTCOME = frozenset({"oa", "interview", "offer", "rejected", "ghosted"})
@@ -103,6 +103,24 @@ def load_company_priors(conn: Conn) -> dict[str, float]:
     return {key: float(PRIOR_POSITIVE) for key in positive_keys}
 
 
+def recently_notified_companies(
+    conn: Conn, now: datetime, days: int
+) -> set[str]:
+    """Companies (raw names) already sent in a digest/urgent within ``days`` days."""
+    if days <= 0:
+        return set()
+    cutoff = (now - timedelta(days=int(days))).isoformat()
+    rows = conn.execute(
+        """
+        SELECT DISTINCT company FROM jobs
+        WHERE notified_at IS NOT NULL AND notified_at >= ?
+          AND company IS NOT NULL AND company != ''
+        """,
+        (cutoff,),
+    ).fetchall()
+    return {str(r["company"]) for r in rows}
+
+
 def _ranked_candidates(
     conn: Conn,
     model: str,
@@ -122,6 +140,7 @@ def _ranked_candidates(
         relocate=profile.relocate,
         now=when,
         priors=load_company_priors(conn),
+        profile=profile,
     )
 
 
@@ -134,10 +153,16 @@ def guest_rows(
     profile: Profile,
     now: datetime | None = None,
 ) -> list[RowLike]:
+    when = now or datetime.now(timezone.utc)
     ranked = _ranked_candidates(
-        conn, model, prompt_version, profile=profile, now=now, only_unnotified=True
+        conn, model, prompt_version, profile=profile, now=when, only_unnotified=True
     )
-    return ranked[: max(int(digest_max), 0)]
+    recent = recently_notified_companies(
+        conn, when, profile.digest_company_cooldown_days
+    )
+    return select_diverse(
+        ranked, digest_max, profile=profile, now=when, recent_companies=recent
+    )
 
 
 def relevant_unapplied_jobs(

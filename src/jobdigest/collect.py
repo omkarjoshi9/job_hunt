@@ -19,6 +19,7 @@ from jobdigest.ats.base import (
 from jobdigest.ats.http_client import make_client
 from jobdigest.config import (
     load_companies,
+    load_discovered_boards,
     load_feeds,
     load_marketplaces,
     load_portals,
@@ -108,6 +109,21 @@ def _error_class(detail: str | None) -> str:
     if "timeout" in text:
         return "timeout"
     return "http"
+
+
+def _with_discovered(rows: list, discovered: list[dict]) -> list:
+    """Curated companies first; discovered boards only for (ats, token) not already listed."""
+    seen = {
+        (str(r.get("ats", "")).strip().lower(), str(r.get("token", "")).strip())
+        for r in rows
+        if isinstance(r, dict)
+    }
+    extra = [
+        d for d in discovered if (d["ats"], d["token"]) not in seen
+    ]
+    if extra:
+        log.info("collect discovered boards added=%s", len(extra))
+    return list(rows) + extra
 
 
 def _dict_rows(payload: Any, key: str) -> list[dict]:
@@ -501,6 +517,7 @@ def run(
     fetch_fn: FetchFn | None = None,
     ats_only: bool = False,
     skip_ats: bool = False,
+    skip_discovered: bool = False,
     skip_portals: bool = False,
     skip_feeds: bool = False,
     skip_marketplaces: bool = False,
@@ -522,6 +539,8 @@ def run(
     rows = payload.get("companies") if isinstance(payload, dict) else None
     if not isinstance(rows, list):
         rows = []
+    if not skip_ats and not skip_discovered:
+        rows = _with_discovered(rows, load_discovered_boards())
     log.info(
         "collect start ats_only=%s skip_ats=%s skip_portals=%s skip_feeds=%s "
         "skip_marketplaces=%s portal_fetch=%s yaml_enabled=%s",
