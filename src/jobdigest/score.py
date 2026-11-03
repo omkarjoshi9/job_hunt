@@ -216,6 +216,7 @@ def run(*, db_path: Path | None = None, chat_fn: ChatFn | None = None) -> int:
 
         scored = 0
         relevant_n = 0
+        failed_batches = 0
         batch_size = max(int(models.batch_size), 1)
         system = _system_prompt(profile)
 
@@ -235,13 +236,18 @@ def run(*, db_path: Path | None = None, chat_fn: ChatFn | None = None) -> int:
                     json_mode=True,
                 )
             except OpenRouterError:
-                return _fail(conn, run_id, "OpenRouterError")
+                # Skip this batch; its jobs stay unscored and retry next run.
+                failed_batches += 1
+                log.warning("score batch fail OpenRouterError offset=%s", i)
+                continue
             except ValueError:
                 return _fail(conn, run_id, "invalid model")
 
             items = _parse_jobs_payload(raw)
             if items is None:
-                return _fail(conn, run_id, "invalid score JSON")
+                failed_batches += 1
+                log.warning("score batch fail invalid JSON offset=%s", i)
+                continue
 
             by_id = {int(r["id"]): r for r in batch}
             for item in items:
@@ -293,6 +299,11 @@ def run(*, db_path: Path | None = None, chat_fn: ChatFn | None = None) -> int:
                 if relevant:
                     relevant_n += 1
 
+        if failed_batches:
+            log.error(
+                "score partial scored=%s failed_batches=%s", scored, failed_batches
+            )
+            return _fail(conn, run_id, f"{failed_batches} batch(es) failed")
         finish_run(
             conn,
             run_id,

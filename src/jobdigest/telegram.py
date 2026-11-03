@@ -108,11 +108,12 @@ def bot_post(
     try:
         resp = post(url, json=payload, timeout=timeout)
     except httpx.HTTPError as exc:
+        # httpx messages can embed the request URL, which contains the bot token.
         log.error("telegram send fail transport")
-        raise TelegramError(str(exc)) from exc
+        raise TelegramError(f"transport error: {type(exc).__name__}") from None
     except Exception as exc:
         log.error("telegram send fail")
-        raise TelegramError(str(exc)) from exc
+        raise TelegramError(f"send error: {type(exc).__name__}") from None
     status = int(getattr(resp, "status_code", 0) or 0)
     if status != 200:
         body = str(getattr(resp, "text", "") or "")[:500]

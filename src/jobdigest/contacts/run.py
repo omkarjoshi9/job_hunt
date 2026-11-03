@@ -101,9 +101,9 @@ def run(
         stats["errors"] += 1
         log.exception("contacts run failed")
         try:
-            finish_run(conn, run_id, "ok", stats)
+            finish_run(conn, run_id, "error", stats, error="contacts run failed")
         except Exception:
             pass
-        return 0
+        return 1
     finally:
         conn.close()

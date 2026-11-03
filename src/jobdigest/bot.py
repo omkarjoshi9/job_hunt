@@ -400,7 +400,11 @@ def poll_once(
     for upd in updates:
         if not isinstance(upd, dict):
             continue
-        handle_update(upd, db_path=db_path, http_post=http_post)
+        try:
+            handle_update(upd, db_path=db_path, http_post=http_post)
+        except Exception:
+            # One bad update must not crash the poller or be redelivered forever.
+            log.exception("bot update fail update_id=%s", upd.get("update_id"))
         uid = upd.get("update_id")
         if uid is not None:
             last = int(uid) + 1
@@ -426,6 +430,9 @@ def main(argv: list[str] | None = None) -> int:
         except KeyboardInterrupt:
             return 0
         except TelegramError:
+            time.sleep(2)
+        except Exception:
+            log.exception("bot poll fail")
             time.sleep(2)
     return 0
 
