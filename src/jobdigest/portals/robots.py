@@ -15,6 +15,12 @@ def origin_of(url: str) -> str:
 
 
 def fetch_robots(session, origin: str) -> str:
+    """Return robots.txt text, or "" on any fetch error.
+
+    NOTE: fail-open by design. An empty body is treated as "allow all" by
+    `allowed`, so a network error or 5xx on robots.txt lets the portal be
+    fetched. Failing closed would silently disable portals on transient errors.
+    """
     url = origin.rstrip("/") + "/robots.txt"
     try:
         if session is not None and hasattr(session, "get"):
@@ -39,10 +45,7 @@ def allowed(url: str, robots_txt: str, *, user_agent: str = UA) -> bool:
     if not (robots_txt or "").strip():
         return True
     rp = Protego.parse(robots_txt)
-    try:
-        return bool(rp.can_fetch(url, user_agent))
-    except TypeError:
-        return bool(rp.can_fetch(user_agent, url))
+    return bool(rp.can_fetch(url, user_agent))
 
 
 def check_url(

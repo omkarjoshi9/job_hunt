@@ -180,7 +180,8 @@ def summarize_digest(
     ]
     try:
         raw = chat_fn(messages, model=model, api_key=api_key, json_mode=False)
-    except OpenRouterError:
+    except (OpenRouterError, ValueError):
+        # ValueError: model guard refused the configured model.
         return render_cards(guest), "fallback"
 
     return _compose_digest(str(raw), guest), "model"

@@ -73,3 +73,25 @@ def test_404_is_dead_token():
     assert result.status is not FetchStatus.EMPTY_BOARD
     assert result.jobs == []
     assert result.http_status == 404
+
+
+def test_partial_pagination_failure_is_incomplete_but_ok():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.params.get("skip", "0") == "0":
+            return httpx.Response(200, json=_load("page0.json"))
+        return httpx.Response(404, text="gone")
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        result = LeverAdapter(client, sleep=lambda _: None, page_limit=2).fetch(COMPANY)
+    assert result.status is FetchStatus.OK
+    assert result.complete is False
+    assert len(result.jobs) == 2
+
+
+def test_complete_true_on_full_fetch():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_load("empty.json"))
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        result = LeverAdapter(client, sleep=lambda _: None, page_limit=2).fetch(COMPANY)
+    assert result.complete is True

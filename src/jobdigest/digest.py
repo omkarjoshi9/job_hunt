@@ -22,7 +22,7 @@ from jobdigest.db import (
 )
 from jobdigest.envfile import load_dotenv
 from jobdigest.logutil import configure, get_logger
-from jobdigest.openrouter import chat as openrouter_chat
+from jobdigest.openrouter import default_chat
 from jobdigest.score import run as score_run
 from jobdigest.rank import age_chip, source_chip
 from jobdigest.followups import parse_iso
@@ -144,10 +144,6 @@ def _guest_dicts(rows, *, now: datetime) -> list[dict]:
     return out
 
 
-def _split_message(text: str, limit: int = 3800) -> list[str]:
-    return split_message(text, limit=limit)
-
-
 def _print_digest(text: str) -> None:
     parts = split_message(text)
     n = len(parts)
@@ -161,19 +157,6 @@ def _print_digest(text: str) -> None:
             print()
 
 
-def _default_chat(
-    messages: list[dict[str, str]],
-    *,
-    model: str,
-    api_key: str,
-    json_mode: bool = False,
-    client=None,
-) -> str:
-    return openrouter_chat(
-        messages, model=model, api_key=api_key, json_mode=json_mode, client=client
-    )
-
-
 def _loud_fail(
     conn,
     run_id: int,
@@ -182,6 +165,7 @@ def _loud_fail(
     telegram_http_post: TelegramHttpPost | None = None,
 ) -> int:
     finish_run(conn, run_id, "error", {"job_ids": []}, error=message)
+    log.error("digest failed: %s", message)
     print(message)
     print(message, file=sys.stderr)
     telegram_deliver(message, required=True, http_post=telegram_http_post)
@@ -284,6 +268,74 @@ def maybe_send_urgent(
     return sent_ids
 
 
+def _run_urgent(conn, run_id, *, models, profile, now, http_post) -> int:
+    sent_ids = maybe_send_urgent(
+        conn, models=models, profile=profile, now=now, http_post=http_post
+    )
+    n = len(sent_ids)
+    log.info("digest urgent sent=%s", n)
+    finish_run(
+        conn,
+        run_id,
+        "ok",
+        {"urgent": n, "path": "urgent", "job_ids": sent_ids},
+    )
+    return 0
+
+
+def _deliver_digest(conn, guest, text, *, http_post) -> int:
+    sent = telegram_deliver(text, required=True, http_post=http_post)
+    log.info("digest telegram_ok=%s", sent)
+    if not sent:
+        return 1
+    if would_post(http_post):
+        for item in guest:
+            stamp_notified(conn, int(item["id"]), "digest")
+    pager_ok = send_guest_pager(guest, required=True, http_post=http_post)
+    log.info("digest pager_ok=%s", pager_ok)
+    return 0 if pager_ok else 1
+
+
+def _run_digest(
+    conn, run_id, *, models, profile, now, sum_fn, http_post
+) -> int:
+    rows = guest_rows(
+        conn,
+        models.score_model,
+        models.score_prompt_version,
+        profile.digest_max,
+        profile=profile,
+        now=now,
+    )
+    guest = _guest_dicts(rows, now=now)
+    titles = [f"{g['company']}: {g['title']}" for g in guest]
+    log.info("digest guests=%s titles=%s", len(guest), titles)
+    if not guest:
+        log.info("digest empty skip send")
+        finish_run(conn, run_id, "ok", {"guest": 0, "path": "empty", "job_ids": []})
+        return 0
+
+    text, path = summarize_digest(
+        guest,
+        chat_fn=sum_fn,
+        model=models.summarize_model,
+        api_key=os.environ.get("OPENROUTER_API_KEY") or "",
+        prompt_version=models.summarize_prompt_version,
+    )
+    _print_digest(text)
+    finish_run(
+        conn,
+        run_id,
+        "ok",
+        {
+            "guest": len(guest),
+            "path": path,
+            "job_ids": [int(item["id"]) for item in guest],
+        },
+    )
+    return _deliver_digest(conn, guest, text, http_post=http_post)
+
+
 def run(
     *,
     db_path: Path | None = None,
@@ -298,7 +350,7 @@ def run(
     score_fn = score_chat_fn or chat_fn
     sum_fn = summarize_chat_fn or chat_fn
     if sum_fn is None:
-        sum_fn = _default_chat
+        sum_fn = default_chat
 
     models = load_models()
     profile = load_profile()
@@ -309,94 +361,36 @@ def run(
         log.info("digest collect_is_ok=%s", collect_ok)
         if not collect_ok:
             return _loud_fail(
-                conn,
-                run_id,
-                "COLLECT FAILED",
-                telegram_http_post=telegram_http_post,
+                conn, run_id, "COLLECT FAILED", telegram_http_post=telegram_http_post
             )
 
-        buf = io.StringIO()
-        with redirect_stdout(buf):
+        with redirect_stdout(io.StringIO()):
             score_code = score_run(db_path=db_path, chat_fn=score_fn)
         if score_code != 0:
             return _loud_fail(
-                conn,
-                run_id,
-                "SCORE FAILED",
-                telegram_http_post=telegram_http_post,
+                conn, run_id, "SCORE FAILED", telegram_http_post=telegram_http_post
             )
 
         conn.close()
         conn = connect(db_path)
         now = datetime.now(timezone.utc)
         if urgent_only:
-            sent_ids = maybe_send_urgent(
+            return _run_urgent(
                 conn,
+                run_id,
                 models=models,
                 profile=profile,
                 now=now,
                 http_post=telegram_http_post,
             )
-            n = len(sent_ids)
-            log.info("digest urgent sent=%s", n)
-            finish_run(
-                conn,
-                run_id,
-                "ok",
-                {"urgent": n, "path": "urgent", "job_ids": sent_ids},
-            )
-            return 0
-
-        rows = guest_rows(
-            conn,
-            models.score_model,
-            models.score_prompt_version,
-            profile.digest_max,
-            profile=profile,
-            now=now,
-        )
-        guest = _guest_dicts(rows, now=now)
-        titles = [f"{g['company']}: {g['title']}" for g in guest]
-        log.info("digest guests=%s titles=%s", len(guest), titles)
-        if not guest:
-            log.info("digest empty skip send")
-            finish_run(conn, run_id, "ok", {"guest": 0, "path": "empty", "job_ids": []})
-            return 0
-
-        api_key = os.environ.get("OPENROUTER_API_KEY") or ""
-        text, path = summarize_digest(
-            guest,
-            chat_fn=sum_fn,
-            model=models.summarize_model,
-            api_key=api_key,
-            prompt_version=models.summarize_prompt_version,
-        )
-        _print_digest(text)
-        finish_run(
+        return _run_digest(
             conn,
             run_id,
-            "ok",
-            {
-                "guest": len(guest),
-                "path": path,
-                "job_ids": [int(item["id"]) for item in guest],
-            },
+            models=models,
+            profile=profile,
+            now=now,
+            sum_fn=sum_fn,
+            http_post=telegram_http_post,
         )
-        sent = telegram_deliver(
-            text, required=True, http_post=telegram_http_post
-        )
-        log.info("digest telegram_ok=%s", sent)
-        if not sent:
-            return 1
-        if would_post(telegram_http_post):
-            for item in guest:
-                stamp_notified(conn, int(item["id"]), "digest")
-        pager_ok = send_guest_pager(
-            guest, required=True, http_post=telegram_http_post
-        )
-        log.info("digest pager_ok=%s", pager_ok)
-        if not pager_ok:
-            return 1
-        return 0
     finally:
         conn.close()

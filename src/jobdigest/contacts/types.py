@@ -12,3 +12,5 @@ class DiscoveredContact:
     email: str | None = None
     role: str | None = None
     confidence: float = 0.0
+    # True when `email` was built from a domain pattern rather than observed.
+    email_inferred: bool = False

@@ -6,10 +6,12 @@ from typing import Any
 
 from jobdigest.ats.base import decode_html_content
 from jobdigest.config import Profile
+from jobdigest.openrouter import OpenRouterError
 
 ChatFn = Callable[..., str]
 
 CITE_REFUSE = "Can't draft: model cited an internship that is not in the profile."
+MODEL_ERROR = "Can't draft: model error."
 EMPTY_INTERNSHIPS = "Can't draft: no internships in profile to cite."
 _DESC_CAP = 3000
 _HINT_MAX = 80
@@ -249,7 +251,10 @@ def draft_blurb(
     if not internships:
         return EMPTY_INTERNSHIPS, "refuse"
     messages = _messages(profile, job_row, prompt_version)
-    raw = chat_fn(messages, model=model, api_key=api_key, json_mode=False)
+    try:
+        raw = chat_fn(messages, model=model, api_key=api_key, json_mode=False)
+    except OpenRouterError:
+        return MODEL_ERROR, "refuse"
     cite, _body = _parse_cite(str(raw))
     if cite is None or not _cite_ok(cite, internships):
         return CITE_REFUSE, "refuse"

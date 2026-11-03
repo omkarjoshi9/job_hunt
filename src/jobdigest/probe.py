@@ -7,13 +7,9 @@ from collections.abc import Callable, Sequence
 import httpx
 
 from jobdigest.ats import get_adapter
-from jobdigest.ats.base import CompanyConfig
+from jobdigest.ats.base import KNOWN_ATS, CompanyConfig
 from jobdigest.ats.http_client import make_client
 from jobdigest.config import load_companies
-
-_KNOWN = frozenset(
-    {"greenhouse", "lever", "ashby", "workable", "smartrecruiters", "bamboohr"}
-)
 
 
 def _parse_ids(raw: list[str] | None) -> set[str] | None:
@@ -73,7 +69,7 @@ def main(
                 continue
             ats = str(row.get("ats") or "")
             token = str(row.get("token") or "")
-            if ats.strip().lower() not in _KNOWN:
+            if ats.strip().lower() not in KNOWN_ATS:
                 print(f"{company_id}\t{ats}\tunimplemented")
                 continue
             company = CompanyConfig(
@@ -85,7 +81,11 @@ def main(
                 notes=str(row.get("notes") or ""),
             )
             adapter = get_adapter(company.ats, client, sleep=sleep)
-            result = adapter.fetch(company)
+            try:
+                result = adapter.fetch(company)
+            except httpx.HTTPError as exc:
+                print(f"{company.id}\t{company.ats}\t{company.token}\t\terror\t0\t{exc}")
+                continue
             http_status = "" if result.http_status is None else result.http_status
             print(
                 f"{company.id}\t{company.ats}\t{company.token}\t"

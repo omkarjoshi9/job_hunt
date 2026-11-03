@@ -8,14 +8,13 @@ import httpx
 from jobdigest.ats.base import (
     CompanyConfig,
     FetchResult,
-    FetchStatus,
+    JobCollector,
     NormalizedJob,
-    classify_http_status,
     empty_or_ok,
+    get_json_page,
     join_locations,
     posted_at_from_item,
 )
-from jobdigest.ats.http_client import parse_json_or_none, request_get
 from jobdigest.logutil import get_logger
 
 _DEFAULT_PAGE_LIMIT = 100
@@ -134,69 +133,42 @@ class SmartRecruitersAdapter:
         self._max_pages = max(1, int(max_pages))
 
     def fetch(self, company: CompanyConfig) -> FetchResult:
+        def valid(payload: object) -> bool:
+            return isinstance(payload, dict) and isinstance(payload.get("content"), list)
+
         offset = 0
         limit = self._page_limit
-        collected: dict[str, dict] = {}
-        extras: list[dict] = []
+        collector = JobCollector(_item_id)
         last_status: int | None = None
         complete = True
         pages_fetched = 0
         total: int | None = None
 
-        def absorb(items: list[dict]) -> None:
-            for item in items:
-                jid = _item_id(item)
-                if not jid:
-                    extras.append(item)
-                    continue
-                if jid in collected:
-                    continue
-                collected[jid] = item
-
         while pages_fetched < self._max_pages:
             url = _postings_url(company.token, limit=limit, offset=offset)
-            try:
-                response = request_get(self._client, url, sleep=self._sleep)
-            except httpx.HTTPError as exc:
+            pg = get_json_page(
+                self._client, url, sleep=self._sleep, valid=valid, label="smartrecruiters"
+            )
+            if pg.http_status is not None:
+                last_status = pg.http_status
+            if pg.failure is not None:
                 if pages_fetched == 0:
-                    return FetchResult(FetchStatus.ERROR, None, [], error=str(exc))
-                complete = False
-                break
-            last_status = response.status_code
-            terminal = classify_http_status(response.status_code)
-            if terminal is not None:
-                if pages_fetched == 0:
-                    return FetchResult(terminal, response.status_code, [], error=None)
-                complete = False
-                break
-            payload = parse_json_or_none(response)
-            if not isinstance(payload, dict) or not isinstance(
-                payload.get("content"), list
-            ):
-                if pages_fetched == 0:
-                    return FetchResult(
-                        FetchStatus.ERROR,
-                        response.status_code,
-                        [],
-                        error="invalid smartrecruiters json",
-                    )
+                    return pg.failure
                 complete = False
                 break
             if total is None:
-                total = _total_found(payload)
-            items = _content(payload)
-            absorb(items)
+                total = _total_found(pg.payload)
+            items = _content(pg.payload)
+            collector.absorb(items)
             pages_fetched += 1
             n = len(items)
-            if n == 0:
+            if n == 0 or n < limit:
                 break
             if total is not None and offset + n >= total:
                 break
-            if n < limit:
-                break
             offset += n
 
-        got = len(collected)
+        got = len(collector)
         if total is not None and total > got:
             complete = False
             log.warning(
@@ -207,13 +179,11 @@ class SmartRecruitersAdapter:
             )
 
         jobs: list[NormalizedJob] = []
-        for item in list(collected.values()) + extras:
+        for item in collector.items():
             mapped = self._map(company, item)
             if mapped is not None:
                 jobs.append(mapped)
-        return FetchResult(
-            empty_or_ok(len(jobs)), last_status, jobs, complete=complete
-        )
+        return FetchResult(empty_or_ok(len(jobs)), last_status, jobs, complete=complete)
 
     def _map(self, company: CompanyConfig, item: dict) -> NormalizedJob | None:
         apply = _apply_url(company, item)

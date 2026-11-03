@@ -14,17 +14,23 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+import argparse
+
 import httpx
 import yaml
 
+from _probe_common import (
+    ASHBY_SLUGS_FILE,
+    HIRE_SIGNAL_FILE,
+    LEVER_SLUGS_FILE,
+    WORKABLE_CAND_FILE,
+    add_slug_dir_arg,
+    confidence,
+    resolve_slug_dir,
+)
+
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "config" / "research_ats_boards.yaml"
-AGENT = Path(r"C:\Users\omkar\.cursor\projects\c-Projects\agent-tools")
-
-LEVER_SLUGS_PATH = AGENT / "29f364df-1d58-4da2-9e67-ab0735e0da07.txt"
-ASHBY_SLUGS_PATH = AGENT / "fed4e41e-3f89-48de-9e1b-63fffa077b61.txt"
-HIRE_SIGNAL_PATH = AGENT / "00b6bbab-20f7-4ffc-a260-53d2c40df18b.txt"
-WORKABLE_CAND_PATH = AGENT / "c4917a19-e048-4278-98e2-593dbd4c318e.txt"
 
 SKIP_IDS = {
     "cred",
@@ -536,11 +542,15 @@ def workable_locations(jobs: list) -> str:
 
 
 def probe_lever(client: httpx.Client, token: str) -> dict | None:
+    """Return a hit dict, None if every host says 404 (no such board), or
+    {"ok": False, "error": ..., "rate_limited": bool} when errors/rate limits
+    prevented a definitive answer."""
     urls = [
         f"https://api.lever.co/v0/postings/{token}?mode=json",
         f"https://api.eu.lever.co/v0/postings/{token}?mode=json",
     ]
     last_err = None
+    rate_limited = False
     for url in urls:
         try:
             r = client.get(url, timeout=20.0)
@@ -548,10 +558,10 @@ def probe_lever(client: httpx.Client, token: str) -> dict | None:
             last_err = str(exc)
             continue
         if r.status_code == 404:
-            last_err = "404"
             continue
         if r.status_code != 200:
             last_err = f"HTTP {r.status_code}"
+            rate_limited = rate_limited or r.status_code == 429
             continue
         try:
             data = r.json()
@@ -568,8 +578,9 @@ def probe_lever(client: httpx.Client, token: str) -> dict | None:
             "sample": (data[0].get("text") if data else ""),
             "api": url,
             "region": region,
-            "err": last_err,
         }
+    if last_err is not None:
+        return {"ok": False, "error": last_err, "rate_limited": rate_limited}
     return None
 
 
@@ -642,21 +653,23 @@ def load_json(path: Path):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def confidence(jobs: int, notable: bool) -> str:
-    if jobs > 0 and notable:
-        return "high"
-    if jobs > 0:
-        return "high"
-    if notable:
-        return "medium"
-    return "low"
+def _lever_hit(token: str, hit: dict | None) -> dict | None:
+    if hit is not None and not hit.get("ok"):
+        kind = "rate-limited" if hit.get("rate_limited") else "error"
+        print(f"  lever {token}: {kind} ({hit.get('error')})", flush=True)
+        return None
+    return hit
 
 
-def main() -> int:
-    lever_slugs = set(load_json(LEVER_SLUGS_PATH))
-    ashby_slugs = set(load_json(ASHBY_SLUGS_PATH))
-    hire = load_json(HIRE_SIGNAL_PATH)
-    wk_cands = load_json(WORKABLE_CAND_PATH)
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    add_slug_dir_arg(parser)
+    args = parser.parse_args(argv)
+    slug_dir = resolve_slug_dir(args.slug_dir)
+    lever_slugs = set(load_json(slug_dir / LEVER_SLUGS_FILE))
+    ashby_slugs = set(load_json(slug_dir / ASHBY_SLUGS_FILE))
+    hire = load_json(slug_dir / HIRE_SIGNAL_FILE)
+    wk_cands = load_json(slug_dir / WORKABLE_CAND_FILE)
 
     lever_candidates: dict[str, tuple[str, str]] = {}
     for slug, meta in LEVER_NAMES.items():
@@ -731,7 +744,7 @@ def main() -> int:
     with httpx.Client(headers=headers, follow_redirects=True, http2=False) as client:
         def run_lever(item):
             token, name, notes, in_list = item
-            hit = probe_lever(client, token)
+            hit = _lever_hit(token, probe_lever(client, token))
             return ("lever", token, name, notes, in_list, hit)
 
         def run_ashby(item):

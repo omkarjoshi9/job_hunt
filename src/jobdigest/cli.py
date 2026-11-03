@@ -69,106 +69,105 @@ def _cmd_sheet_sync(args: argparse.Namespace) -> int:
     return int(sync(db_path=db))
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        prog="jobdigest",
-        description="Daily intern job digest (collect, score, digest, contacts, sheet-append, sheet-sync).",
-    )
-    sub = parser.add_subparsers(dest="command", required=False)
-    p_collect = sub.add_parser(
+_DB_HELP = "SQLite path (default DATABASE_PATH or data/jobs.db)"
+
+
+def _add_db(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--db", default=None, help=_DB_HELP)
+
+
+def _add_flag(p: argparse.ArgumentParser, name: str, help_text: str) -> None:
+    p.add_argument(name, action="store_true", help=help_text)
+
+
+def _add_collect_parser(sub) -> None:
+    p = sub.add_parser(
         "collect", help="fetch ATS JSON, portals, RSS, and marketplaces into SQLite"
     )
-    p_collect.add_argument(
-        "--ats-only",
-        action="store_true",
-        help="skip portals, feeds, and marketplaces",
-    )
-    p_collect.add_argument(
-        "--skip-ats",
-        action="store_true",
-        help="skip companies.yaml ATS fetch",
-    )
-    p_collect.add_argument(
-        "--skip-portals",
-        action="store_true",
-        help="skip portals.yaml",
-    )
-    p_collect.add_argument(
-        "--skip-feeds",
-        action="store_true",
-        help="skip feeds.yaml",
-    )
-    p_collect.add_argument(
-        "--skip-marketplaces",
-        action="store_true",
-        help="skip marketplaces.yaml",
-    )
-    p_collect.add_argument(
+    _add_flag(p, "--ats-only", "skip portals, feeds, and marketplaces")
+    _add_flag(p, "--skip-ats", "skip companies.yaml ATS fetch")
+    _add_flag(p, "--skip-portals", "skip portals.yaml")
+    _add_flag(p, "--skip-feeds", "skip feeds.yaml")
+    _add_flag(p, "--skip-marketplaces", "skip marketplaces.yaml")
+    p.add_argument(
         "--portal-fetch",
         action="append",
         choices=("http", "dynamic", "stealth"),
         dest="portal_fetch",
         help="only run portals with this fetch mode (repeatable)",
     )
-    p_collect.add_argument(
-        "--db",
-        default=None,
-        help="SQLite path (default DATABASE_PATH or data/jobs.db)",
-    )
-    p_collect.set_defaults(func=_cmd_collect)
+    _add_db(p)
+    p.set_defaults(func=_cmd_collect)
 
-    db_help = "SQLite path (default DATABASE_PATH or data/jobs.db)"
-    p_score = sub.add_parser("score", help="score pass jobs with OpenRouter JSON")
-    p_score.add_argument("--db", default=None, help=db_help)
-    p_score.set_defaults(func=_cmd_score)
 
-    p_digest = sub.add_parser(
-        "digest", help="score then print and send Telegram digest"
-    )
-    p_digest.add_argument("--db", default=None, help=db_help)
-    p_digest.add_argument(
+def _add_digest_parser(sub) -> None:
+    p = sub.add_parser("digest", help="score then print and send Telegram digest")
+    _add_db(p)
+    _add_flag(
+        p,
         "--urgent-only",
-        action="store_true",
-        help="push watchlist/high-score action cards; skip the 12-job digest",
+        "push watchlist/high-score action cards; skip the 12-job digest",
     )
-    p_digest.set_defaults(func=_cmd_digest)
+    p.set_defaults(func=_cmd_digest)
 
-    p_sheet = sub.add_parser("sheet-append", help="append applied jobs to Google Sheets")
-    p_sheet.add_argument("--db", default=None, help=db_help)
-    p_sheet.add_argument("--url", default=None, help="mark this apply URL then push")
-    p_sheet.add_argument("--company", default="")
-    p_sheet.add_argument("--title", default="")
-    p_sheet.add_argument("--status", default="applied")
-    p_sheet.add_argument("--notes", default="")
-    p_sheet.add_argument("--source", default="")
-    p_sheet.set_defaults(func=_cmd_sheet)
 
-    p_sync = sub.add_parser(
-        "sheet-sync",
-        help="append new offcampus digest guests to Google Sheets; skip existing URLs",
-    )
-    p_sync.add_argument("--db", default=None, help=db_help)
-    p_sync.set_defaults(func=_cmd_sheet_sync)
+def _add_sheet_parser(sub) -> None:
+    p = sub.add_parser("sheet-append", help="append applied jobs to Google Sheets")
+    _add_db(p)
+    p.add_argument("--url", default=None, help="mark this apply URL then push")
+    p.add_argument("--company", default="")
+    p.add_argument("--title", default="")
+    p.add_argument("--status", default="applied")
+    p.add_argument("--notes", default="")
+    p.add_argument("--source", default="")
+    p.set_defaults(func=_cmd_sheet)
 
-    p_contacts = sub.add_parser(
+
+def _add_contacts_parser(sub) -> None:
+    p = sub.add_parser(
         "contacts",
         help="enrich hiring-manager contacts for last digest guests",
     )
-    p_contacts.add_argument("--db", default=None, help=db_help)
-    p_contacts.add_argument(
+    _add_db(p)
+    p.add_argument(
         "--limit",
         type=int,
         default=None,
         help="max jobs to enrich (default: all last-digest ids)",
     )
-    p_contacts.add_argument(
+    p.add_argument(
         "--job-id",
         action="append",
         type=int,
         dest="job_id",
         help="enrich this job id (repeatable; skips last-digest lookup)",
     )
-    p_contacts.set_defaults(func=_cmd_contacts)
+    p.set_defaults(func=_cmd_contacts)
+
+
+def _add_simple_parser(sub, name: str, help_text: str, func) -> None:
+    p = sub.add_parser(name, help=help_text)
+    _add_db(p)
+    p.set_defaults(func=func)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="jobdigest",
+        description="Daily intern job digest (collect, score, digest, contacts, sheet-append, sheet-sync).",
+    )
+    sub = parser.add_subparsers(dest="command", required=False)
+    _add_collect_parser(sub)
+    _add_simple_parser(sub, "score", "score pass jobs with OpenRouter JSON", _cmd_score)
+    _add_digest_parser(sub)
+    _add_sheet_parser(sub)
+    _add_simple_parser(
+        sub,
+        "sheet-sync",
+        "append new offcampus digest guests to Google Sheets; skip existing URLs",
+        _cmd_sheet_sync,
+    )
+    _add_contacts_parser(sub)
     return parser
 
 

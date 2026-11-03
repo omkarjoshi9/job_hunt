@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import random
+import time
 from collections.abc import Callable
 from typing import Any
+from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
 import feedparser
@@ -11,6 +14,25 @@ import httpx
 from jobdigest.ats.base import NormalizedJob, decode_html_content
 from jobdigest.portals import PortalResult
 from jobdigest.portals.session import UA
+
+
+_THROTTLE_MIN_S = 0.5
+_THROTTLE_MAX_S = 1.0
+
+
+def _entry_posted_at(entry: Any) -> str | None:
+    for key in ("published_parsed", "updated_parsed"):
+        st = getattr(entry, key, None)
+        if st is None and hasattr(entry, "get"):
+            st = entry.get(key)
+        if not st:
+            continue
+        try:
+            dt = datetime(*tuple(st)[:6], tzinfo=timezone.utc)
+        except (TypeError, ValueError):
+            continue
+        return dt.isoformat().replace("+00:00", "Z")
+    return None
 
 
 def parse_feed(xml_text: str, *, source: str) -> list[NormalizedJob]:
@@ -48,6 +70,7 @@ def parse_feed(xml_text: str, *, source: str) -> list[NormalizedJob]:
                 ats="rss",
                 external_id=str(ext),
                 raw_json=json.dumps(card, separators=(",", ":"), ensure_ascii=False),
+                posted_at=_entry_posted_at(entry),
             )
         )
     return jobs
@@ -79,8 +102,14 @@ def _entry_id(entry: Any) -> str:
     return ""
 
 
-def fetch_feed(url: str, *, http_get: Callable[[str], Any] | None = None) -> str:
+def fetch_feed(
+    url: str,
+    *,
+    http_get: Callable[[str], Any] | None = None,
+    sleep: Callable[[float], None] | None = None,
+) -> str:
     if http_get is None:
+        (sleep or time.sleep)(random.uniform(_THROTTLE_MIN_S, _THROTTLE_MAX_S))
         response = httpx.get(
             url, headers={"User-Agent": UA}, timeout=30.0, follow_redirects=True
         )
@@ -102,19 +131,29 @@ def run_one(
     feed: dict,
     *,
     http_get: Callable[[str], Any] | None = None,
+    sleep: Callable[[float], None] | None = None,
 ) -> PortalResult:
     name = str(feed.get("name") or "")
     url = str(feed.get("url") or "")
     try:
-        xml = fetch_feed(url, http_get=http_get)
+        xml = fetch_feed(url, http_get=http_get, sleep=sleep)
         jobs = parse_feed(xml, source=name)
-        return PortalResult(status="ok", jobs=jobs, http_status=200, name=name, url=url)
     except Exception as exc:
-        klass = "timeout" if "timeout" in type(exc).__name__.lower() or "timeout" in str(exc).lower() else "http"
+        timed_out = isinstance(exc, (httpx.TimeoutException, TimeoutError))
         return PortalResult(
             status="error",
-            error_class=klass,
+            error_class="timeout" if timed_out else "http",
             detail=str(exc),
             name=name,
             url=url,
         )
+    if not jobs:
+        return PortalResult(
+            status="error",
+            error_class="parse",
+            detail="0 entries",
+            http_status=200,
+            name=name,
+            url=url,
+        )
+    return PortalResult(status="ok", jobs=jobs, http_status=200, name=name, url=url)

@@ -43,7 +43,9 @@ def test_draft_cold_includes_github_and_fallback_observation(monkeypatch):
     )
     assert called["n"] == 1
     assert "https://github.com/example" in draft.body
-    assert "intern/new-grad role looks like a strong fit" in draft.body
+    from jobdigest.email_draft import _fallback_observations
+
+    assert any(obs in draft.body for obs in _fallback_observations())
     text = format_telegram(draft)
     assert "Subject:" in text
     assert "To: priya.sharma@acme.com" in text
@@ -61,3 +63,13 @@ def test_draft_without_email_skips_mailto():
     assert draft.to == ""
     assert draft.mailto == ""
     assert "(no email)" in format_telegram(draft)
+
+
+def test_fallback_selection_deterministic_and_uses_all():
+    from jobdigest.email_draft import _fallback_observations, _select_fallback
+
+    items = _fallback_observations()
+    assert len(items) > 1
+    assert _select_fallback("a|b|c") == _select_fallback("a|b|c")
+    picked = {_select_fallback(f"co{i}|t|e") for i in range(200)}
+    assert picked == set(items)

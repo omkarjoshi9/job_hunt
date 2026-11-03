@@ -6,14 +6,15 @@ import os
 import re
 import sys
 import tempfile
-from collections.abc import Mapping, Sequence
-from contextlib import redirect_stdout
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager, redirect_stdout
 from dataclasses import dataclass, replace
 from html import unescape
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
+import httpx
 import yaml
 
 INTERN_INTL_RAW = (
@@ -304,8 +305,6 @@ def annotate_row(row: InternRow) -> InternRow:
     result = extract_token(row.apply_url)
     if isinstance(result, tuple):
         return replace(row, ats=result[0], token=result[1], skip_reason="")
-    if isinstance(result, Unresolved):
-        return replace(row, skip_reason=result.reason)
     return replace(row, skip_reason=result.reason)
 
 
@@ -470,14 +469,9 @@ def _read_markdown(args: argparse.Namespace, client: Any) -> tuple[str | None, i
     if not args.fetch:
         print("error: --markdown or --fetch required", file=sys.stderr)
         return None, 1
-    if args.url and not args.fetch:
-        print("error: --url requires --fetch", file=sys.stderr)
-        return None, 1
     url = args.url or INTERN_INTL_RAW
     own = client is None
     if client is None:
-        import httpx
-
         client = httpx.Client(headers={"User-Agent": "JobHunt/0.1"}, timeout=30.0)
     try:
         response = client.get(url)
@@ -485,7 +479,7 @@ def _read_markdown(args: argparse.Namespace, client: Any) -> tuple[str | None, i
             print(f"error: fetch failed HTTP {response.status_code}", file=sys.stderr)
             return None, 1
         return response.text, 0
-    except Exception as exc:  # noqa: BLE001 — maintainer fetch only
+    except (httpx.HTTPError, OSError, ValueError) as exc:
         print(f"error: fetch failed: {exc}", file=sys.stderr)
         return None, 1
     finally:
@@ -501,9 +495,44 @@ def _print_section(title: str, rows: Sequence[InternRow]) -> None:
     print()
 
 
+@contextmanager
+def _config_dir_override(dest: Path) -> Iterator[None]:
+    """Temporarily point JOBDIGEST_CONFIG_DIR at ``dest``.
+
+    NOT thread-safe: it mutates process-global os.environ, because probe.main()
+    only reads companies via config.load_companies() (no config-dir parameter).
+    The previous value is always restored.
+    """
+    old = os.environ.get("JOBDIGEST_CONFIG_DIR")
+    os.environ["JOBDIGEST_CONFIG_DIR"] = str(dest)
+    try:
+        yield
+    finally:
+        if old is None:
+            os.environ.pop("JOBDIGEST_CONFIG_DIR", None)
+        else:
+            os.environ["JOBDIGEST_CONFIG_DIR"] = old
+
+
+def _run_probe(
+    payload: Mapping[str, Any], new_rows: Sequence[Mapping[str, Any]], client: Any
+) -> str:
+    """Probe only the new ids against a temp overlay; return captured stdout."""
+    from jobdigest.probe import main as probe_main
+
+    ids = ",".join(row["id"] for row in new_rows)
+    buf = io.StringIO()
+    with tempfile.TemporaryDirectory(prefix="jobdigest-discover-") as tmp:
+        dest = Path(tmp)
+        write_overlay(payload, new_rows, dest)
+        with _config_dir_override(dest), redirect_stdout(buf):
+            probe_main(argv=["--ids", ids], client=client)
+    return buf.getvalue()
+
+
 def main(argv: Sequence[str] | None = None, client: Any | None = None) -> int:
     args = _build_parser().parse_args(list(argv) if argv is not None else None)
-    if args.url is not None and not args.fetch and args.markdown is None:
+    if args.url is not None and not args.fetch:
         print("error: --url requires --fetch", file=sys.stderr)
         return 1
     text, code = _read_markdown(args, client)
@@ -531,25 +560,8 @@ def main(argv: Sequence[str] | None = None, client: Any | None = None) -> int:
     _print_section("unresolved", diff.unresolved)
 
     if args.probe and diff.new:
-        ids = ",".join(row["id"] for row in diff.new)
-        old_env = os.environ.get("JOBDIGEST_CONFIG_DIR")
-        with tempfile.TemporaryDirectory(prefix="jobdigest-discover-") as tmp:
-            dest = Path(tmp)
-            write_overlay(payload, diff.new, dest)
-            os.environ["JOBDIGEST_CONFIG_DIR"] = str(dest)
-            buf = io.StringIO()
-            try:
-                from jobdigest.probe import main as probe_main
-
-                with redirect_stdout(buf):
-                    probe_main(argv=["--ids", ids], client=client)
-            finally:
-                if old_env is None:
-                    os.environ.pop("JOBDIGEST_CONFIG_DIR", None)
-                else:
-                    os.environ["JOBDIGEST_CONFIG_DIR"] = old_env
+        probe_out = _run_probe(payload, diff.new, client)
         print("## probe")
-        probe_out = buf.getvalue()
         if probe_out:
             sys.stdout.write(probe_out)
             if not probe_out.endswith("\n"):

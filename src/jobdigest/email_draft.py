@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import zlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,7 +12,10 @@ import yaml
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from jobdigest.config import Profile
+from jobdigest.logutil import get_logger
 from jobdigest.normalize import collapse_ws
+
+log = get_logger("email_draft")
 
 ChatFn = Callable[..., str]
 
@@ -45,20 +49,29 @@ def _row_get(row: Any, key: str, default: Any = None) -> Any:
         return default
 
 
-def _select_fallback() -> str:
+_DEFAULT_FALLBACK = (
+    "This intern/new-grad role looks like a strong fit for the stack I've been shipping with."
+)
+
+
+def _fallback_observations() -> list[str]:
     path = _TEMPLATES / "fallbacks.yaml"
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except OSError:
-        data = None
-    items = []
-    if isinstance(data, dict):
-        items = data.get("observations") or []
-    elif isinstance(data, list):
-        items = data
-    if isinstance(items, list) and items:
-        return collapse_ws(str(items[0]))
-    return "This intern/new-grad role looks like a strong fit for the stack I've been shipping with."
+    except (OSError, yaml.YAMLError):
+        return []
+    items = data.get("observations") if isinstance(data, dict) else data
+    if not isinstance(items, list):
+        return []
+    return [collapse_ws(str(i)) for i in items if str(i or "").strip()]
+
+
+def _select_fallback(key: str = "") -> str:
+    """Pick a fallback observation deterministically from a job/contact key."""
+    items = _fallback_observations()
+    if not items:
+        return _DEFAULT_FALLBACK
+    return items[zlib.crc32(key.encode("utf-8")) % len(items)]
 
 
 def _observation(
@@ -70,10 +83,12 @@ def _observation(
     model: str | None,
     api_key: str,
 ) -> str:
-    if chat_fn is None or not (model or "").strip():
-        return _select_fallback()
     title = str(_row_get(job_row, "title") or "")
     company = str(_row_get(job_row, "company") or "")
+    email = str(_row_get(contact, "email") or "")
+    fallback_key = f"{company}|{title}|{email}"
+    if chat_fn is None or not (model or "").strip():
+        return _select_fallback(fallback_key)
     messages = [
         {
             "role": "system",
@@ -97,13 +112,9 @@ def _observation(
         if text:
             return text[:280]
     except Exception:
-        pass
-    _ = contact
-    return _select_fallback()
-
-
-def _contact_get(contact: Any, key: str, default: Any = None) -> Any:
-    return _row_get(contact, key, default)
+        # chat_fn is an injected callable; any failure falls back to a canned line.
+        log.warning("email observation LLM failed; using fallback", exc_info=True)
+    return _select_fallback(fallback_key)
 
 
 def _mailto(email: str, subject: str, body: str) -> str:
@@ -125,7 +136,7 @@ def draft_email(
     model: str | None = None,
     api_key: str = "",
 ) -> EmailDraft:
-    role = str(_contact_get(contact, "role") or "")
+    role = str(_row_get(contact, "role") or "")
     template_name = (
         "recruiter_outreach.j2" if _RECRUIT.search(role) else "cold_outreach.j2"
     )
@@ -145,20 +156,20 @@ def draft_email(
         "github_url": github_url,
         "title": str(_row_get(job_row, "title") or ""),
         "company": str(_row_get(job_row, "company") or ""),
-        "contact_name": str(_contact_get(contact, "name") or "").strip() or None,
+        "contact_name": str(_row_get(contact, "name") or "").strip() or None,
         "product_observation": observation,
     }
     rendered = _ENV.get_template(template_name).render(**ctx).strip("\n")
     subject_line, _, rest = rendered.partition("\n")
     subject = subject_line.removeprefix("Subject:").strip()
     body = rest.lstrip("\n")
-    to = collapse_ws(str(_contact_get(contact, "email") or "")).lower()
-    conf_raw = _contact_get(contact, "confidence")
+    to = collapse_ws(str(_row_get(contact, "email") or "")).lower()
+    conf_raw = _row_get(contact, "confidence")
     try:
         confidence = float(conf_raw) if conf_raw is not None else None
     except (TypeError, ValueError):
         confidence = None
-    source = str(_contact_get(contact, "source") or "")
+    source = str(_row_get(contact, "source") or "")
     return EmailDraft(
         subject=subject,
         to=to,

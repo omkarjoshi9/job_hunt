@@ -11,7 +11,6 @@ import httpx
 from jobdigest.logutil import get_logger
 
 TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/{method}"
-TELEGRAM_SEND_URL = "https://api.telegram.org/bot{token}/sendMessage"
 SPLIT_LIMIT = 3800
 ALLOWED_UPDATES = ["message", "callback_query"]
 PAGER_TEXT = "Tap a number to open a card."
@@ -58,12 +57,9 @@ def credentials() -> tuple[str, str]:
 
 
 def would_post(http_post: HttpPost | None = None) -> bool:
+    """True when credentials exist. ``http_post`` is accepted for call-site symmetry."""
     token, chat_id = credentials()
-    if not token or not chat_id:
-        return False
-    if http_post is None and os.environ.get("PYTEST_CURRENT_TEST"):
-        return False
-    return True
+    return bool(token and chat_id)
 
 
 def require_telegram() -> bool:
@@ -83,8 +79,8 @@ def _response_json(resp: Any) -> dict:
             data = raw_json()
             if isinstance(data, dict):
                 return data
-        except Exception:
-            pass
+        except ValueError:
+            log.debug("telegram response json() failed; falling back to text")
     text = str(getattr(resp, "text", "") or "")
     if not text:
         return {}
@@ -271,9 +267,6 @@ def _gate_send(
             raise TelegramError("missing credentials")
         log.debug("telegram skip missing credentials")
         return None
-    if http_post is None and os.environ.get("PYTEST_CURRENT_TEST"):
-        log.debug("telegram skip pytest")
-        return None
     return token, chat_id
 
 
@@ -287,7 +280,6 @@ def deliver(
 
     Local missing token: skip send (caller already printed). Hosted cron sets
     JOBDIGEST_REQUIRE_TELEGRAM so a required send without creds fails loud.
-    Default pytest never performs a live POST unless http_post is injected.
     """
     if not (text or "").strip():
         log.debug("telegram skip empty")

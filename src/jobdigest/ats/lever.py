@@ -7,15 +7,13 @@ import httpx
 from jobdigest.ats.base import (
     CompanyConfig,
     FetchResult,
-    FetchStatus,
     NormalizedJob,
-    classify_http_status,
     decode_html_content,
     empty_or_ok,
+    get_json_page,
     join_locations,
     parse_posted_at,
 )
-from jobdigest.ats.http_client import parse_json_or_none, request_get
 
 
 class LeverAdapter:
@@ -36,31 +34,33 @@ class LeverAdapter:
         skip = 0
         collected: list[dict] = []
         last_status = None
+        complete = True
         while True:
             url = (
                 f"https://api.lever.co/v0/postings/{company.token}"
                 f"?mode=json&limit={self._page_limit}&skip={skip}"
             )
-            try:
-                response = request_get(self._client, url, sleep=self._sleep)
-            except httpx.HTTPError as exc:
-                return FetchResult(FetchStatus.ERROR, None, [], error=str(exc))
-            last_status = response.status_code
-            terminal = classify_http_status(response.status_code)
-            if terminal is not None:
-                return FetchResult(terminal, response.status_code, [], error=None)
-            payload = parse_json_or_none(response)
-            if not isinstance(payload, list):
-                return FetchResult(
-                    FetchStatus.ERROR, response.status_code, [], error="invalid lever json"
-                )
-            page = [item for item in payload if isinstance(item, dict)]
-            collected.extend(page)
+            pg = get_json_page(
+                self._client,
+                url,
+                sleep=self._sleep,
+                valid=lambda p: isinstance(p, list),
+                label="lever",
+            )
+            if pg.http_status is not None:
+                last_status = pg.http_status
+            if pg.failure is not None:
+                if not collected:
+                    return pg.failure
+                complete = False
+                break
+            payload = pg.payload
+            collected.extend(item for item in payload if isinstance(item, dict))
             if len(payload) < self._page_limit:
                 break
             skip += len(payload)
         jobs = [self._map(company, item) for item in collected]
-        return FetchResult(empty_or_ok(len(jobs)), last_status, jobs)
+        return FetchResult(empty_or_ok(len(jobs)), last_status, jobs, complete=complete)
 
     def _map(self, company: CompanyConfig, item: dict) -> NormalizedJob:
         cats = item.get("categories") if isinstance(item.get("categories"), dict) else {}

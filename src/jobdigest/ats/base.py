@@ -5,7 +5,12 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Protocol
+from collections.abc import Callable
+from typing import Any, Protocol
+
+import httpx
+
+from jobdigest.ats.http_client import parse_json_or_none, request_get
 
 _TAG = re.compile(r"<[^>]+>")
 _WS = re.compile(r"\s+")
@@ -134,3 +139,72 @@ def posted_at_from_item(item: dict, *keys: str) -> str | None:
         if parsed is not None:
             return parsed
     return None
+
+
+# Single source of truth for ATS types that have an adapter.
+KNOWN_ATS = frozenset(
+    {"greenhouse", "lever", "ashby", "workable", "smartrecruiters", "bamboohr"}
+)
+
+
+@dataclass
+class Page:
+    """One fetched JSON page. `failure` is a ready FetchResult when the page is unusable."""
+
+    payload: Any = None
+    http_status: int | None = None
+    failure: FetchResult | None = None
+
+
+def get_json_page(
+    client: httpx.Client,
+    url: str,
+    *,
+    sleep: Callable[[float], None],
+    valid: Callable[[Any], bool],
+    label: str,
+) -> Page:
+    """GET url and map transport/HTTP/shape problems to a failure FetchResult."""
+    try:
+        response = request_get(client, url, sleep=sleep)
+    except httpx.HTTPError as exc:
+        return Page(failure=FetchResult(FetchStatus.ERROR, None, [], error=str(exc)))
+    code = response.status_code
+    terminal = classify_http_status(code)
+    if terminal is not None:
+        return Page(http_status=code, failure=FetchResult(terminal, code, [], error=None))
+    payload = parse_json_or_none(response)
+    if not valid(payload):
+        return Page(
+            http_status=code,
+            failure=FetchResult(FetchStatus.ERROR, code, [], error=f"invalid {label} json"),
+        )
+    return Page(payload=payload, http_status=code)
+
+
+class JobCollector:
+    """Dedupe raw items by id; items without an id are kept as-is."""
+
+    def __init__(self, id_of: Callable[[dict], str]) -> None:
+        self._id_of = id_of
+        self.by_id: dict[str, dict] = {}
+        self.extras: list[dict] = []
+
+    def absorb(self, items: list[dict]) -> None:
+        for item in items:
+            jid = self._id_of(item)
+            if not jid:
+                self.extras.append(item)
+            elif jid not in self.by_id:
+                self.by_id[jid] = item
+
+    def new_ids(self, items: list[dict]) -> set[str]:
+        ids = {self._id_of(item) for item in items}
+        ids.discard("")
+        return ids - set(self.by_id)
+
+    def items(self) -> list[dict]:
+        return list(self.by_id.values()) + self.extras
+
+    def __len__(self) -> int:
+        return len(self.by_id)

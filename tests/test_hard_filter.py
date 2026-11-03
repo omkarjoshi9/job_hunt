@@ -613,3 +613,25 @@ def test_svp_engineering_not_title_reject():
     )
     assert status == "reject"
     assert reason != "title_reject"
+
+
+def test_company_history_over_n_years_not_yoe():
+    status, reason = _check(
+        title="Software Engineer Intern",
+        location_raw="Pune",
+        description_text="We have over 10 years of innovation in payments.",
+    )
+    assert (status, reason) == ("pass", "ok")
+
+
+def test_over_n_years_experience_rejects():
+    for text in (
+        "Requires over 10 years of experience",
+        "more than 8 years relevant background",
+        "over 9 years of professional work",
+        "over 12 years industry knowledge",
+    ):
+        status, reason = _check(
+            title="Software Engineer Intern", location_raw="Pune", description_text=text
+        )
+        assert (status, reason) == ("reject", "yoe"), text

@@ -67,19 +67,8 @@ def css_select(node: Any, selector: str) -> list[Any]:
     css = getattr(node, "css", None)
     if not callable(css):
         return []
-    try:
-        found = css(selector, selector_config={"adaptive": False})
-    except TypeError:
-        try:
-            found = css(selector, adaptive=False)
-        except TypeError:
-            found = css(selector)
-    if found is None:
-        return []
-    try:
-        return list(found)
-    except TypeError:
-        return [found]
+    found = css(selector, adaptive=False)
+    return [] if found is None else list(found)
 
 
 def node_text(node: Any) -> str:

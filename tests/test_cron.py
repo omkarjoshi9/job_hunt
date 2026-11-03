@@ -144,3 +144,27 @@ def test_main_writes_slot(tmp_path, monkeypatch, capsys):
     assert "slot=digest" in text
     captured = capsys.readouterr()
     assert "slot=digest" in captured.out
+
+
+def test_dom_and_dow_restricted_use_or_semantics():
+    from jobdigest.cron import cron_matches
+
+    # 2026-09-03 is a Thursday (dow 4); "0 0 15 * 1" = 15th OR Monday
+    def at(day):
+        return datetime(2026, 9, day, 0, 0, tzinfo=timezone.utc)
+
+    assert cron_matches("0 0 15 * 1", at(15)) is True  # dom only (Tuesday)
+    assert cron_matches("0 0 15 * 1", at(14)) is True  # dow only (Monday)
+    assert cron_matches("0 0 15 * 1", at(16)) is False  # neither
+
+
+def test_single_restricted_day_field_still_and_semantics():
+    from jobdigest.cron import cron_matches
+
+    thursday = datetime(2026, 9, 3, 0, 0, tzinfo=timezone.utc)
+    assert cron_matches("0 0 * * 4", thursday) is True
+    assert cron_matches("0 0 * * 1", thursday) is False
+    assert cron_matches("0 0 3 * *", thursday) is True
+    assert cron_matches("0 0 4 * *", thursday) is False
+    assert cron_matches("0 0 3 * 4", thursday) is True
+    assert cron_matches("0 0 */2 * 1", thursday) is False  # star-led field is unrestricted -> AND

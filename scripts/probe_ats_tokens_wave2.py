@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 import sys
-import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -13,13 +12,8 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "config" / "research_ats_boards.yaml"
-sys.path.insert(0, str(ROOT / "scripts"))
-from probe_ats_tokens import (  # noqa: E402
-    LEVER_NAMES,
-    UA,
-    probe_lever,
-    skipped,
-)
+from _probe_common import confidence
+from probe_ats_tokens import LEVER_NAMES, UA, _lever_hit, probe_lever, skipped
 
 WAVE2: dict[str, tuple[str, str]] = {
     "bcg": ("Boston Consulting Group", "MNC consulting"),
@@ -416,7 +410,7 @@ def main() -> int:
     with httpx.Client(headers=headers, follow_redirects=True) as client:
         def run(item):
             token, name, notes = item
-            return token, name, notes, probe_lever(client, token)
+            return token, name, notes, _lever_hit(token, probe_lever(client, token))
 
         with ThreadPoolExecutor(max_workers=10) as pool:
             futs = [pool.submit(run, it) for it in todo]
@@ -450,7 +444,7 @@ def main() -> int:
                         "ats": "lever",
                         "token": token,
                         "notes": "; ".join(note_parts),
-                        "confidence": "high" if jobs > 0 else "medium",
+                        "confidence": confidence(jobs, True),
                     }
                 )
     data["companies"].extend(added)

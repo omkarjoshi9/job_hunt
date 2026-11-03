@@ -277,3 +277,10 @@ def test_prior_can_flip_5_point_llm_gap():
     assert rank_pune == pytest.approx(104)
     assert rank_mumbai == pytest.approx(100)
     assert rank_pune > rank_mumbai
+
+
+def test_location_match_is_word_boundary():
+    assert location_pref("Punekar Tech Park", "Intern", home="Pune", relocate=[]) == LOC_OTHER
+    assert (
+        location_pref("Hybrid - Pune.", "Intern", home="Pune", relocate=[]) == LOC_HOME
+    )

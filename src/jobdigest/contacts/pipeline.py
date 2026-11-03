@@ -49,16 +49,16 @@ def run_pipeline(
         if domain:
             try:
                 pattern = email_pattern_detection(domain, http, token=token)
-            except Exception as exc:
-                log.debug("pattern detection failed: %s", exc)
+            except (httpx.HTTPError, ValueError) as exc:
+                log.warning("pattern detection failed domain=%s: %s", domain, exc)
                 pattern = f"{{first}}.{{last}}@{domain}"
         github: list[DiscoveredContact] = []
         if token and domain:
             org_slug = domain.split(".")[0]
             try:
                 github = github_org_recruiters(org_slug, http, token=token)
-            except Exception as exc:
-                log.debug("github org recruiters failed: %s", exc)
+            except (httpx.HTTPError, ValueError) as exc:
+                log.warning("github org recruiters failed org=%s: %s", org_slug, exc)
         elif not token:
             log.info("contacts github skip missing JOBDIGEST_GITHUB_TOKEN")
         return merge_contacts(
@@ -68,8 +68,8 @@ def run_pipeline(
             domain=domain,
             pattern=pattern,
         )
-    except Exception as exc:
-        log.debug("contacts pipeline failed: %s", exc)
+    except Exception:  # noqa: BLE001 - pipeline contract: never raise; logged with traceback
+        log.exception("contacts pipeline failed company=%r", company)
         return []
     finally:
         if own:

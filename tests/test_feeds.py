@@ -40,3 +40,50 @@ def test_feeds_module_stays_httpx_feedparser():
     assert "scrapling" not in text
     assert "XMLFeedSpider" not in text
     assert "Fetcher.get" not in text
+
+
+def test_parse_feed_populates_posted_at_iso_z():
+    xml = (
+        '<?xml version="1.0"?><rss version="2.0"><channel><title>t</title>'
+        "<item><title>Intern</title><link>https://e.com/1</link>"
+        "<pubDate>Mon, 01 Sep 2025 10:30:00 +0530</pubDate></item>"
+        "<item><title>No date</title><link>https://e.com/2</link></item>"
+        "</channel></rss>"
+    )
+    jobs = parse_feed(xml, source="s")
+    assert jobs[0].posted_at == "2025-09-01T05:00:00Z"
+    assert jobs[1].posted_at is None
+
+
+def test_run_one_timeout_classified_by_type():
+    import httpx
+
+    from jobdigest.feeds import run_one
+
+    def boom(url):
+        raise httpx.ReadTimeout("slow")
+
+    res = run_one({"name": "f", "url": "https://e.com/rss"}, http_get=boom)
+    assert res.status == "error" and res.error_class == "timeout"
+
+    def other(url):
+        raise RuntimeError("a timeout word in message")
+
+    res = run_one({"name": "f", "url": "https://e.com/rss"}, http_get=other)
+    assert res.error_class == "http"
+
+
+def test_run_one_empty_feed_is_parse_error():
+    from jobdigest.feeds import run_one
+
+    xml = '<?xml version="1.0"?><rss version="2.0"><channel><title>t</title></channel></rss>'
+    res = run_one({"name": "f", "url": "https://e.com/rss"}, http_get=lambda u: xml)
+    assert res.status == "error" and res.error_class == "parse"
+
+
+def test_run_one_ok():
+    from jobdigest.feeds import run_one
+
+    xml = PYTHON_JOBS.read_text(encoding="utf-8")
+    res = run_one({"name": "f", "url": "https://e.com/rss"}, http_get=lambda u: xml)
+    assert res.status == "ok" and len(res.jobs) == 2

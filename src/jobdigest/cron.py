@@ -60,13 +60,27 @@ def cron_matches(expr: str, when: datetime) -> bool:
         return False
     if not _matches_field(hour, when.hour, 0, 23):
         return False
-    if not _matches_field(day, when.day, 1, 31):
-        return False
     if not _matches_field(month, when.month, 1, 12):
         return False
-    if _matches_field(weekday, dow, 0, 7):
+    return _day_matches(day, weekday, when, dow)
+
+
+def _weekday_matches(field: str, dow: int) -> bool:
+    if _matches_field(field, dow, 0, 7):
         return True
-    return dow == 0 and _matches_field(weekday, 7, 0, 7)
+    return dow == 0 and _matches_field(field, 7, 0, 7)
+
+
+def _day_matches(day: str, weekday: str, when: datetime, dow: int) -> bool:
+    # Standard cron: when both day-of-month and day-of-week are restricted
+    # (neither starts with "*"), a date matches if EITHER field matches.
+    dom_restricted = not day.strip().startswith("*")
+    dow_restricted = not weekday.strip().startswith("*")
+    dom_ok = _matches_field(day, when.day, 1, 31)
+    dow_ok = _weekday_matches(weekday, dow)
+    if dom_restricted and dow_restricted:
+        return dom_ok or dow_ok
+    return dom_ok and dow_ok
 
 
 def is_due(

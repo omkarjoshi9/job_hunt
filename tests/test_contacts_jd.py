@@ -32,3 +32,16 @@ def test_parse_jd_recruiter_and_rejects_degree_false_positive():
 def test_parse_jd_empty():
     assert parse_jd_names("") == []
     assert parse_jd_names(None) == []
+
+
+def test_parse_jd_rejects_job_title_lookalikes():
+    text = (
+        "Reports to: Senior Engineer. Hiring manager: Engineering Lead. "
+        "Recruiter: Director Hiring. Reports to: Head Platform."
+    )
+    assert parse_jd_names(text) == []
+
+
+def test_parse_jd_keeps_real_name_next_to_title_words():
+    found = parse_jd_names("Hiring manager: Priya Sharma")
+    assert [c.name for c in found] == ["Priya Sharma"]

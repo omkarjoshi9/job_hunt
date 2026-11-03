@@ -150,3 +150,43 @@ def test_load_marketplaces_from_config_dir(tmp_path, monkeypatch):
     data = load_marketplaces()
     assert data["marketplaces"][0]["site"] == "naukri"
     assert data["marketplaces"][0]["enabled"] is False
+
+
+def _write_models(tmp_path, body):
+    (tmp_path / "models.yaml").write_text(body, encoding="utf-8")
+
+
+def test_models_batch_size_under_score_and_legacy_top_level(tmp_path, monkeypatch):
+    monkeypatch.setenv("JOBDIGEST_CONFIG_DIR", str(tmp_path))
+    base = "summarize:\n  model: m2\n  prompt_version: v1\n"
+    _write_models(
+        tmp_path, "score:\n  model: m1\n  prompt_version: v1\n  batch_size: 7\n" + base
+    )
+    assert load_models().batch_size == 7
+    _write_models(
+        tmp_path, "score:\n  model: m1\n  prompt_version: v1\n" + base + "batch_size: 9\n"
+    )
+    assert load_models().batch_size == 9
+    _write_models(tmp_path, "score:\n  model: m1\n  prompt_version: v1\n" + base)
+    assert load_models().batch_size == 12
+
+
+def test_example_models_batch_size_only_under_score():
+    data = yaml.safe_load(
+        (ROOT / "config" / "models.example.yaml").read_text(encoding="utf-8")
+    )
+    assert "batch_size" not in data
+    assert data["score"]["batch_size"] == 12
+
+
+def test_example_fallback_logs_warning(tmp_path, monkeypatch, caplog):
+    import logging
+
+    src = (ROOT / "config" / "feeds.example.yaml").read_text(encoding="utf-8")
+    (tmp_path / "feeds.example.yaml").write_text(src, encoding="utf-8")
+    monkeypatch.setenv("JOBDIGEST_CONFIG_DIR", str(tmp_path))
+    from jobdigest.config import load_feeds
+
+    with caplog.at_level(logging.WARNING, logger="jobdigest.config"):
+        load_feeds()
+    assert any("feeds.example.yaml" in r.getMessage() for r in caplog.records)

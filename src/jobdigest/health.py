@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
 from jobdigest.db import last_collect_run
+
+log = logging.getLogger("jobdigest.health")
 
 Conn = Any
 _SECTION_CAP = 15
@@ -26,7 +29,8 @@ class HealthReport:
 def _cell(row: Any, name: str, default: str = "") -> str:
     try:
         value = row[name]
-    except (KeyError, IndexError, TypeError):
+    except (KeyError, IndexError, TypeError) as exc:
+        log.debug("health row has no column %r: %s", name, exc)
         return default
     if value is None:
         return default

@@ -6,7 +6,14 @@ import httpx
 
 from jobdigest.ats.ashby import AshbyAdapter
 from jobdigest.ats.bamboohr import BambooHRAdapter
-from jobdigest.ats.base import BoardAdapter, CompanyConfig, FetchResult, FetchStatus, NormalizedJob
+from jobdigest.ats.base import (
+    KNOWN_ATS,
+    BoardAdapter,
+    CompanyConfig,
+    FetchResult,
+    FetchStatus,
+    NormalizedJob,
+)
 from jobdigest.ats.greenhouse import GreenhouseAdapter
 from jobdigest.ats.lever import LeverAdapter
 from jobdigest.ats.smartrecruiters import SmartRecruitersAdapter
@@ -20,17 +27,13 @@ __all__ = [
     "FetchResult",
     "FetchStatus",
     "GreenhouseAdapter",
+    "KNOWN_ATS",
     "LeverAdapter",
     "NormalizedJob",
     "SmartRecruitersAdapter",
     "WorkableAdapter",
     "get_adapter",
 ]
-
-_KNOWN = frozenset(
-    {"greenhouse", "lever", "ashby", "workable", "smartrecruiters", "bamboohr"}
-)
-
 
 def get_adapter(
     ats: str,
@@ -39,7 +42,7 @@ def get_adapter(
     sleep: Callable[[float], None],
 ) -> BoardAdapter:
     key = (ats or "").strip().lower()
-    if key not in _KNOWN:
+    if key not in KNOWN_ATS:
         raise ValueError(f"unimplemented ats: {ats!r}")
     if key == "greenhouse":
         return GreenhouseAdapter(client, sleep=sleep)

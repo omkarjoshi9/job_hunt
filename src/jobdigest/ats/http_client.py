@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import random
 from collections.abc import Callable
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 import httpx
@@ -11,6 +13,9 @@ DEFAULT_TIMEOUT = 30.0
 JITTER_MIN_S = 0.2
 JITTER_MAX_S = 0.4
 RETRY_AFTER_CAP_S = 30.0
+DEFAULT_RETRY_AFTER_S = 2.0
+MAX_TRANSIENT_RETRIES = 2
+BACKOFF_BASE_S = 0.5
 
 
 def make_client() -> httpx.Client:
@@ -24,11 +29,19 @@ def make_client() -> httpx.Client:
 def _retry_after_seconds(response: httpx.Response) -> float:
     raw = response.headers.get("Retry-After")
     if raw is None:
-        return 2.0
+        return DEFAULT_RETRY_AFTER_S
+    raw = raw.strip()
     try:
-        return min(float(raw), RETRY_AFTER_CAP_S)
+        seconds = float(raw)
     except ValueError:
-        return 2.0
+        try:
+            when = parsedate_to_datetime(raw)
+        except (TypeError, ValueError):
+            return DEFAULT_RETRY_AFTER_S
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        seconds = (when - datetime.now(timezone.utc)).total_seconds()
+    return max(0.0, min(seconds, RETRY_AFTER_CAP_S))
 
 
 def request_get(
@@ -36,15 +49,29 @@ def request_get(
     url: str,
     *,
     sleep: Callable[[float], None],
-    jitter: bool = True,
 ) -> httpx.Response:
-    if jitter:
-        sleep(random.uniform(JITTER_MIN_S, JITTER_MAX_S))
-    response = client.get(url)
-    if response.status_code == 429:
-        sleep(_retry_after_seconds(response))
-        response = client.get(url)
-    return response
+    """GET with polite jitter, one 429 retry, and up to 2 retries on 5xx/timeouts."""
+    sleep(random.uniform(JITTER_MIN_S, JITTER_MAX_S))
+    rate_limited = False
+    transient = 0
+    while True:
+        try:
+            response = client.get(url)
+        except httpx.TimeoutException:
+            if transient >= MAX_TRANSIENT_RETRIES:
+                raise
+            transient += 1
+            sleep(BACKOFF_BASE_S * 2 ** (transient - 1))
+            continue
+        if response.status_code == 429 and not rate_limited:
+            rate_limited = True
+            sleep(_retry_after_seconds(response))
+            continue
+        if response.status_code >= 500 and transient < MAX_TRANSIENT_RETRIES:
+            transient += 1
+            sleep(BACKOFF_BASE_S * 2 ** (transient - 1))
+            continue
+        return response
 
 
 def looks_like_html(response: httpx.Response) -> bool:

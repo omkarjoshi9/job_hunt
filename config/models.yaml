@@ -5,4 +5,3 @@ score:
 summarize:
   model: anthropic/claude-sonnet-4
   prompt_version: v1
-batch_size: 12

@@ -8,15 +8,15 @@ import httpx
 from jobdigest.ats.base import (
     CompanyConfig,
     FetchResult,
-    FetchStatus,
+    JobCollector,
     NormalizedJob,
-    classify_http_status,
+    Page,
     decode_html_content,
     empty_or_ok,
+    get_json_page,
     join_locations,
     posted_at_from_item,
 )
-from jobdigest.ats.http_client import parse_json_or_none, request_get
 from jobdigest.logutil import get_logger
 
 _PLACEHOLDERS = frozenset({"n/a", "na"})
@@ -79,70 +79,40 @@ class GreenhouseAdapter:
         self._max_pages = max(1, int(max_pages))
 
     def fetch(self, company: CompanyConfig) -> FetchResult:
-        url = _jobs_url(company.token)
-        try:
-            response = request_get(self._client, url, sleep=self._sleep)
-        except httpx.HTTPError as exc:
-            return FetchResult(FetchStatus.ERROR, None, [], error=str(exc))
-        terminal = classify_http_status(response.status_code)
-        if terminal is not None:
-            return FetchResult(terminal, response.status_code, [], error=None)
-        payload = parse_json_or_none(response)
-        if not isinstance(payload, dict) or not isinstance(payload.get("jobs"), list):
-            return FetchResult(
-                FetchStatus.ERROR, response.status_code, [], error="invalid greenhouse json"
+        def valid(payload: object) -> bool:
+            return isinstance(payload, dict) and isinstance(payload.get("jobs"), list)
+
+        def get(url: str) -> Page:
+            return get_json_page(
+                self._client, url, sleep=self._sleep, valid=valid, label="greenhouse"
             )
-        collected: dict[str, dict] = {}
-        extras: list[dict] = []
 
-        def absorb(items: list[dict]) -> None:
-            for item in items:
-                jid = _item_id(item)
-                if not jid:
-                    extras.append(item)
-                    continue
-                if jid in collected:
-                    continue
-                collected[jid] = item
-
-        first_items = _dict_jobs(payload)
-        absorb(first_items)
-        total = _meta_total(payload)
-        last_status = response.status_code
+        first = get(_jobs_url(company.token))
+        if first.failure is not None:
+            return first.failure
+        collector = JobCollector(_item_id)
+        collector.absorb(_dict_jobs(first.payload))
+        total = _meta_total(first.payload)
+        last_status = first.http_status
         complete = True
         pages_fetched = 1
         page = 2
         while (
             total is not None
-            and total > len(collected)
+            and total > len(collector)
             and pages_fetched < self._max_pages
         ):
-            extra_url = _jobs_url(company.token, page=page)
-            try:
-                response = request_get(self._client, extra_url, sleep=self._sleep)
-            except httpx.HTTPError:
-                complete = False
-                break
-            last_status = response.status_code
+            nxt = get(_jobs_url(company.token, page=page))
             pages_fetched += 1
-            if classify_http_status(response.status_code) is not None:
+            if nxt.http_status is not None:
+                last_status = nxt.http_status
+            items = _dict_jobs(nxt.payload) if nxt.failure is None else []
+            if nxt.failure is not None or not collector.new_ids(items):
                 complete = False
                 break
-            extra_payload = parse_json_or_none(response)
-            if not isinstance(extra_payload, dict) or not isinstance(
-                extra_payload.get("jobs"), list
-            ):
-                complete = False
-                break
-            items = _dict_jobs(extra_payload)
-            page_ids = {_item_id(item) for item in items if _item_id(item)}
-            seen = set(collected)
-            if not page_ids or page_ids <= seen:
-                complete = False
-                break
-            absorb(items)
+            collector.absorb(items)
             page += 1
-        got = len(collected)
+        got = len(collector)
         if total is not None and total > got:
             complete = False
             log.warning(
@@ -151,12 +121,8 @@ class GreenhouseAdapter:
                 total,
                 got,
             )
-        jobs = [
-            self._map(company, item) for item in list(collected.values()) + extras
-        ]
-        return FetchResult(
-            empty_or_ok(len(jobs)), last_status, jobs, complete=complete
-        )
+        jobs = [self._map(company, item) for item in collector.items()]
+        return FetchResult(empty_or_ok(len(jobs)), last_status, jobs, complete=complete)
 
     def _map(self, company: CompanyConfig, item: dict) -> NormalizedJob:
         loc = item.get("location") if isinstance(item.get("location"), dict) else {}

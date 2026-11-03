@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, NamedTuple
 from urllib.parse import urlsplit
 
 UA = "JobHunt/0.1"
@@ -20,7 +20,28 @@ _CHALLENGE = (
     "checking your browser",
 )
 
-_SESSION_CMS: dict[int, Any] = {}
+
+class OpenedSession(NamedTuple):
+    """A live scrapling session plus the context manager that must be exited to close it.
+
+    FetcherSession.__enter__ returns a different object than the factory, so the
+    factory has to be kept to call __exit__ later.
+    """
+
+    session: Any
+    context: Any
+
+    def close(self) -> None:
+        _close_context(self.session, self.context)
+
+
+def _close_context(session: Any, context: Any) -> None:
+    if context is not None and hasattr(context, "__exit__"):
+        context.__exit__(None, None, None)
+        return
+    closer = getattr(session, "close", None)
+    if callable(closer):
+        closer()
 
 
 def is_challenge(html: str, status: int) -> bool:
@@ -35,15 +56,14 @@ def portal_fetch_mode(portal: dict) -> str:
     return raw or FETCH_HTTP
 
 
-def _enter(factory: Any) -> Any:
+def _enter(factory: Any) -> OpenedSession:
     session = factory
     if hasattr(factory, "__enter__"):
         session = factory.__enter__()
-    _SESSION_CMS[id(session)] = factory
-    return session
+    return OpenedSession(session, factory)
 
 
-def open_session():
+def open_session() -> OpenedSession:
     try:
         from scrapling.fetchers import FetcherSession
     except Exception as exc:
@@ -59,7 +79,7 @@ def open_session():
     return _enter(factory)
 
 
-def open_dynamic_session():
+def open_dynamic_session() -> OpenedSession:
     try:
         from scrapling.fetchers import DynamicSession
     except Exception as exc:
@@ -75,7 +95,7 @@ def open_dynamic_session():
     return _enter(factory)
 
 
-def open_stealth_session():
+def open_stealth_session() -> OpenedSession:
     try:
         from scrapling.fetchers import StealthySession
     except Exception as exc:
@@ -91,24 +111,18 @@ def open_stealth_session():
     return _enter(factory)
 
 
-def close_session(session: Any) -> None:
-    if session is None:
-        return
-    factory = _SESSION_CMS.pop(id(session), None)
-    if factory is not None and hasattr(factory, "__exit__"):
-        factory.__exit__(None, None, None)
-        return
-    closer = getattr(session, "close", None)
-    if callable(closer):
-        closer()
-
-
 @dataclass
 class SessionBundle:
     http: Any = None
     dynamic: Any = None
     stealth: Any = None
     errors: dict[str, str] = field(default_factory=dict)
+    # mode -> context manager that owns the session; exited by close_bundle.
+    contexts: dict[str, Any] = field(default_factory=dict, repr=False)
+
+    def adopt(self, mode: str, opened: OpenedSession) -> None:
+        setattr(self, mode, opened.session)
+        self.contexts[mode] = opened.context
 
     def get(self, mode: str) -> Any:
         if mode == FETCH_HTTP:
@@ -125,17 +139,17 @@ def open_bundle(modes: Iterable[str]) -> SessionBundle:
     wanted = {str(mode) for mode in modes}
     if FETCH_HTTP in wanted:
         try:
-            bundle.http = open_session()
+            bundle.adopt(FETCH_HTTP, open_session())
         except Exception as exc:
             bundle.errors[FETCH_HTTP] = str(exc)
     if FETCH_DYNAMIC in wanted:
         try:
-            bundle.dynamic = open_dynamic_session()
+            bundle.adopt(FETCH_DYNAMIC, open_dynamic_session())
         except Exception as exc:
             bundle.errors[FETCH_DYNAMIC] = str(exc)
     if FETCH_STEALTH in wanted:
         try:
-            bundle.stealth = open_stealth_session()
+            bundle.adopt(FETCH_STEALTH, open_stealth_session())
         except Exception as exc:
             bundle.errors[FETCH_STEALTH] = str(exc)
     return bundle
@@ -144,9 +158,11 @@ def open_bundle(modes: Iterable[str]) -> SessionBundle:
 def close_bundle(bundle: SessionBundle | None) -> None:
     if bundle is None:
         return
-    close_session(bundle.http)
-    close_session(bundle.dynamic)
-    close_session(bundle.stealth)
+    for mode in (FETCH_HTTP, FETCH_DYNAMIC, FETCH_STEALTH):
+        session = bundle.get(mode)
+        if session is None:
+            continue
+        _close_context(session, bundle.contexts.pop(mode, None))
 
 
 def _page_html(page: Any) -> str:

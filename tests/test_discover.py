@@ -241,3 +241,30 @@ def test_workflows_pipeline_has_no_discover():
     assert "jobdigest.discover" not in pipeline
     assert "jobdigest.discover" not in start
     assert "jobdigest.discover" not in ci
+
+
+def test_url_without_fetch_rejected_even_with_markdown(capsys):
+    code = main(argv=["--markdown", str(SAMPLE_MD), "--url", "http://x/y.md"])
+    assert code == 1
+    assert "--url requires --fetch" in capsys.readouterr().err
+
+
+def test_url_without_fetch_or_markdown_rejected(capsys):
+    assert main(argv=["--url", "http://x/y.md"]) == 1
+    assert "--url requires --fetch" in capsys.readouterr().err
+
+
+def test_probe_failure_restores_config_env(tmp_path, monkeypatch):
+    dest = tmp_path / "companies.yaml"
+    dest.write_bytes(MINI_YAML.read_bytes())
+    monkeypatch.setenv("JOBDIGEST_CONFIG_DIR", "/orig")
+
+    def bad_probe(argv=None, client=None, sleep=None):
+        raise RuntimeError("probe died")
+
+    monkeypatch.setattr("jobdigest.probe.main", bad_probe)
+    try:
+        main(argv=["--markdown", str(SAMPLE_MD), "--companies", str(dest), "--probe"])
+    except RuntimeError:
+        pass
+    assert os.environ["JOBDIGEST_CONFIG_DIR"] == "/orig"

@@ -20,7 +20,9 @@ def _words(n: int, word: str = "experience") -> str:
 
 
 def test_prompt_omits_name_and_cgpa():
-    profile = load_profile()
+    # Distinctive values: the placeholder name "Example" is a substring of the
+    # placeholder internship "Example intern", which legitimately appears in the prompt.
+    profile = replace(load_profile(), name="Zyx Qwertyson", cgpa=9.37)
     captured: list[list[dict]] = []
 
     def chat_fn(messages, *, model, api_key="", json_mode=False, client=None):
@@ -149,3 +151,21 @@ def test_word_count_flag_does_not_recall_model():
     assert any(f.startswith("length:") for f in flags)
     assert "length: 3" in flags
     assert "experience built intern" in body
+
+
+def test_openrouter_error_returns_refusal():
+    from jobdigest.blurb import MODEL_ERROR
+    from jobdigest.openrouter import OpenRouterError
+
+    def chat_fn(messages, **kw):
+        raise OpenRouterError("boom")
+
+    text, path = draft_blurb(
+        profile=load_profile(),
+        job_row=JOB,
+        chat_fn=chat_fn,
+        model="m",
+        api_key="",
+        prompt_version="v1",
+    )
+    assert (text, path) == (MODEL_ERROR, "refuse")

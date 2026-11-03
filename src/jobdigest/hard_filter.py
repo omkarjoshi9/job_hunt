@@ -10,7 +10,14 @@ _RANGE = re.compile(
 )
 _PLUS = re.compile(r"(?<!\d)(\d+)\s*\+\s*(?:years?|yrs?)\b", re.I)
 _MIN = re.compile(
-    r"(?:minimum|min(?:imum)?|at least|(?<![a-z])over|more than)\s*(\d+)\s*(?:years?|yrs?)\b(?!\s+ago)",
+    r"(?:minimum|min(?:imum)?|at least)\s*(\d+)\s*(?:years?|yrs?)\b(?!\s+ago)",
+    re.I,
+)
+# "over/more than N years" also appears in company-history text ("over 10 years of
+# innovation"), so require experience-ish words right after.
+_MIN_OVER = re.compile(
+    r"(?<![a-z])(?:over|more than)\s*(\d+)\s*(?:years?|yrs?)\b"
+    r"\s+(?:of\s+)?(?:(?:[\w-]+\s+){0,2}?)(?:experience|exp|relevant|industry|professional)\b",
     re.I,
 )
 _PLUS_N = re.compile(
@@ -58,9 +65,10 @@ def yoe_too_high(blob: str, min_yoe_reject: int) -> bool:
     for m in _PLUS.finditer(blob):
         if int(m.group(1)) >= min_yoe_reject:
             return True
-    for m in _MIN.finditer(blob):
-        if int(m.group(1)) >= min_yoe_reject:
-            return True
+    for pat in (_MIN, _MIN_OVER):
+        for m in pat.finditer(blob):
+            if int(m.group(1)) >= min_yoe_reject:
+                return True
     for m in _PLUS_N.finditer(blob):
         if int(m.group(1)) >= min_yoe_reject:
             return True

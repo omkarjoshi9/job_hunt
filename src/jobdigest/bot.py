@@ -181,6 +181,54 @@ def _mail_gate(row: Any, conn: Any) -> str | None:
     return None
 
 
+# In-process negative cache so repeated Mail presses do not re-run the (slow,
+# network-bound) contact lookup for a job that already came up empty.
+NO_CONTACT_TTL_SECONDS = 6 * 3600
+_NO_CONTACT: dict[tuple[int, str], float] = {}
+
+
+def _no_contact_key(job_id: int, row: Any) -> tuple[int, str]:
+    try:
+        marker = str(row["apply_url_norm"] or row["company"] or "")
+    except (KeyError, IndexError, TypeError):
+        marker = ""
+    return (job_id, marker)
+
+
+def _recently_empty(key: tuple[int, str]) -> bool:
+    expires = _NO_CONTACT.get(key)
+    if expires is None:
+        return False
+    if expires <= time.monotonic():
+        _NO_CONTACT.pop(key, None)
+        return False
+    return True
+
+
+def _discover_contacts(conn: Any, job_id: int, row: Any) -> bool:
+    """Run enrichment and store results. Returns False if the lookup itself failed."""
+    from jobdigest.contacts import enrich_job
+
+    try:
+        found = enrich_job(row)
+    except Exception:  # noqa: BLE001 - surfaced to the user by the caller
+        log.exception("bot mail enrich fail job_id=%s", job_id)
+        return False
+    for person in found:
+        upsert_contact(
+            conn,
+            job_id=job_id,
+            company=person.company or str(row["company"] or ""),
+            name=person.name,
+            source=person.source,
+            email=person.email,
+            role=person.role,
+            domain=person.domain,
+            confidence=person.confidence,
+        )
+    return True
+
+
 def _handle_mail(
     job_id: int,
     *,
@@ -195,28 +243,17 @@ def _handle_mail(
     if refuse:
         _send_plain(refuse, http_post=http_post)
         return
-    rows = contacts_for_job(conn, job_id)
-    if not rows:
-        from jobdigest.contacts import enrich_job
-
-        try:
-            found = enrich_job(row)
-        except Exception:
-            found = []
-        for person in found:
-            upsert_contact(
-                conn,
-                job_id=job_id,
-                company=person.company or str(row["company"] or ""),
-                name=person.name,
-                source=person.source,
-                email=person.email,
-                role=person.role,
-                domain=person.domain,
-                confidence=person.confidence,
+    key = _no_contact_key(job_id, row)
+    if not contacts_for_job(conn, job_id) and not _recently_empty(key):
+        if not _discover_contacts(conn, job_id, row):
+            _send_plain(
+                "Can't draft: contact lookup failed. Try again later.",
+                http_post=http_post,
             )
+            return
     contact = best_contact_for_job(conn, job_id)
     if contact is None:
+        _NO_CONTACT[key] = time.monotonic() + NO_CONTACT_TTL_SECONDS
         _send_plain("No hiring manager found for this job.", http_post=http_post)
         return
     api_key = (os.environ.get("OPENROUTER_API_KEY") or "").strip()
@@ -233,21 +270,77 @@ def _handle_mail(
             model=model,
             api_key=api_key,
         )
-    except Exception:
+    except Exception:  # noqa: BLE001 - template/model failures all mean "can't draft"
+        log.exception("bot mail draft fail job_id=%s", job_id)
         _send_plain("Can't draft: email template missing.", http_post=http_post)
         return
     _send_plain(format_telegram(draft), http_post=http_post)
 
 
-def _answer(cq: dict, *, http_post: HttpPost | None) -> None:
+def _answer(cq: dict, *, http_post: HttpPost | None, text: str = "") -> None:
     token, _ = credentials()
     cq_id = str(cq.get("id") or "")
     if not token or not cq_id:
         return
     try:
-        answer_callback_query(cq_id, token=token, http_post=http_post)
+        answer_callback_query(cq_id, token=token, http_post=http_post, text=text)
     except TelegramError:
         log.error("telegram answer callback fail")
+
+
+def _status_outcome(
+    result: str, job_id: int, apply_url: str, status: str
+) -> tuple[str, dict]:
+    if result == "ok":
+        show = status != "hidden"
+        markup = action_markup(
+            job_id, apply_url, status_buttons=False, why_me=show, mail=show
+        )
+        return _STATUS_LINE[status], markup
+    line = "Already tracking." if result == "skip" else "Job not found."
+    markup = action_markup(job_id, apply_url, status_buttons=True, why_me=True)
+    return line, markup
+
+
+def _edit_card(
+    cq: dict,
+    body: str,
+    markup: dict,
+    *,
+    http_post: HttpPost | None,
+) -> None:
+    token, chat_id = credentials()
+    msg = cq.get("message") if isinstance(cq.get("message"), dict) else {}
+    message_id = msg.get("message_id") if isinstance(msg, dict) else None
+    if not token or message_id is None:
+        return
+    try:
+        edit_message_text(
+            chat_id,
+            int(message_id),
+            body,
+            token=token,
+            http_post=http_post,
+            reply_markup=markup if markup.get("inline_keyboard") else None,
+        )
+    except TelegramError:
+        log.error("telegram edit fail")
+
+
+def _handle_slow_action(
+    kind: str,
+    job_id: int,
+    *,
+    conn: Any,
+    http_post: HttpPost | None,
+    chat_fn: ChatFn | None,
+) -> None:
+    handler = _handle_why_me if kind == "w" else _handle_mail
+    try:
+        handler(job_id, conn=conn, http_post=http_post, chat_fn=chat_fn)
+    except Exception:  # noqa: BLE001 - tell the user instead of failing silently
+        log.exception("bot action %s fail job_id=%s", kind, job_id)
+        _send_plain("Something went wrong. Try again later.", http_post=http_post)
 
 
 def _handle_callback(
@@ -258,26 +351,22 @@ def _handle_callback(
     http_post: HttpPost | None,
     chat_fn: ChatFn | None = None,
 ) -> None:
-    _answer(cq, http_post=http_post)
-    raw = str(cq.get("data") or "")
-    match = _CB.match(raw)
+    match = _CB.match(str(cq.get("data") or ""))
     if not match:
+        _answer(cq, http_post=http_post, text="Unknown action.")
         return
-    kind, job_s = match.group(1), match.group(2)
-    job_id = int(job_s)
-    if kind == "w":
-        _handle_why_me(job_id, conn=conn, http_post=http_post, chat_fn=chat_fn)
-        return
-    if kind == "m":
-        _handle_mail(job_id, conn=conn, http_post=http_post, chat_fn=chat_fn)
+    kind, job_id = match.group(1), int(match.group(2))
+    if kind in ("w", "m"):
+        _answer(cq, http_post=http_post)
+        _handle_slow_action(kind, job_id, conn=conn, http_post=http_post, chat_fn=chat_fn)
         return
     models = load_models()
     row = job_score_row(conn, job_id, models.score_model, models.score_prompt_version)
-    if row is None:
-        return
-    guest = _guest_dicts([row], now=now)
+    guest = _guest_dicts([row], now=now) if row is not None else []
     if not guest:
+        _answer(cq, http_post=http_post, text="Job not found.")
         return
+    _answer(cq, http_post=http_post)
     card = render_card(guest[0], 1, now=now)
     apply_url = str(guest[0].get("url") or "")
     if kind == "o":
@@ -293,43 +382,8 @@ def _handle_callback(
         return
     status = _CB_STATUS[kind]
     result = apply_bot_status(conn, job_id, status)
-    if result == "ok":
-        line = _STATUS_LINE[status]
-        show = status != "hidden"
-        markup = action_markup(
-            job_id,
-            apply_url,
-            status_buttons=False,
-            why_me=show,
-            mail=show,
-        )
-    elif result == "skip":
-        line = "Already tracking."
-        markup = action_markup(
-            job_id, apply_url, status_buttons=True, why_me=True
-        )
-    else:
-        line = "Job not found."
-        markup = action_markup(
-            job_id, apply_url, status_buttons=True, why_me=True
-        )
-    token, chat_id = credentials()
-    msg = cq.get("message") if isinstance(cq.get("message"), dict) else {}
-    message_id = msg.get("message_id") if isinstance(msg, dict) else None
-    if not token or message_id is None:
-        return
-    body = f"{card}\n\n{line}"
-    try:
-        edit_message_text(
-            chat_id,
-            int(message_id),
-            body,
-            token=token,
-            http_post=http_post,
-            reply_markup=markup if markup.get("inline_keyboard") else None,
-        )
-    except TelegramError:
-        log.error("telegram edit fail")
+    line, markup = _status_outcome(result, job_id, apply_url, status)
+    _edit_card(cq, f"{card}\n\n{line}", markup, http_post=http_post)
 
 
 def handle_update(

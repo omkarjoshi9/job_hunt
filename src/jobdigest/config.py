@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+log = logging.getLogger("jobdigest.config")
 
 
 def config_dir() -> Path:
@@ -21,6 +24,7 @@ def _yaml_path(name: str) -> Path:
         return path
     example = config_dir() / f"{Path(name).stem}.example.yaml"
     if example.is_file():
+        log.warning("%s not found; falling back to example config %s", path, example)
         return example
     raise FileNotFoundError(path)
 
@@ -146,7 +150,7 @@ def load_models() -> Models:
         summarize_model=summarize_model,
         score_prompt_version=str(score["prompt_version"]),
         summarize_prompt_version=str(summarize["prompt_version"]),
-        batch_size=int(d.get("batch_size", score.get("batch_size", 12))),
+        batch_size=int(score.get("batch_size", d.get("batch_size", 12))),
         blurb_model=blurb_model,
         blurb_prompt_version=blurb_prompt_version,
     )

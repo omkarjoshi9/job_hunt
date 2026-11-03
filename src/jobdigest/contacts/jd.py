@@ -31,6 +31,15 @@ _STOP = frozenset(
         "reports",
     }
 )
+_TITLE_WORDS = frozenset(
+    {
+        "senior", "junior", "staff", "principal", "engineer", "engineers",
+        "manager", "managers", "lead", "leads", "director", "head", "team",
+        "teams", "vp", "president", "developer", "officer", "analyst",
+        "associate", "architect", "scientist", "specialist", "coordinator",
+        "executive", "founder", "cto", "ceo", "intern", "interns",
+    }
+)
 _DEGREE_FALSE = re.compile(
     r"\b("
     r"bachelor|bachelors|master|masters|phd|mba|degree|"
@@ -52,6 +61,8 @@ def _valid_name(name: str) -> bool:
     if not text or len(text.split()) > 3:
         return False
     if _DEGREE_FALSE.search(text):
+        return False
+    if any(part.casefold() in _TITLE_WORDS for part in text.split()):
         return False
     return True
 

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 
 import httpx
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+DEFAULT_REFERER = "https://openrouter.ai"
 
 SCORE_SCHEMA = {
     "type": "object",
@@ -76,7 +78,7 @@ def chat(
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
-        "HTTP-Referer": "https://github.com/omkar/Job_Hunt",
+        "HTTP-Referer": os.environ.get("OPENROUTER_REFERER") or DEFAULT_REFERER,
         "X-Title": "jobdigest",
     }
 
@@ -97,11 +99,23 @@ def chat(
             content = data["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
             raise OpenRouterError("missing choices[0].message.content") from exc
-        if content is None:
-            raise OpenRouterError("missing choices[0].message.content")
         if not isinstance(content, str):
             raise OpenRouterError("missing choices[0].message.content")
         return content
     finally:
         if own_client:
             http.close()
+
+
+def default_chat(
+    messages: list[dict[str, str]],
+    *,
+    model: str,
+    api_key: str,
+    json_mode: bool = False,
+    client: httpx.Client | None = None,
+) -> str:
+    """Shared chat wrapper used as the default chat_fn by score/digest."""
+    return chat(
+        messages, model=model, api_key=api_key, json_mode=json_mode, client=client
+    )

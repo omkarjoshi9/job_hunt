@@ -19,7 +19,7 @@ from jobdigest.db import (
 from jobdigest.envfile import load_dotenv
 from jobdigest.hard_filter import ops_non_swe, yoe_too_high
 from jobdigest.logutil import configure, get_logger
-from jobdigest.openrouter import OpenRouterError, chat as openrouter_chat
+from jobdigest.openrouter import OpenRouterError, default_chat
 
 ChatFn = Callable[..., str]
 log = get_logger("score")
@@ -173,21 +173,103 @@ def coerce_relevant(
 
 def _fail(conn, run_id: int, message: str) -> int:
     finish_run(conn, run_id, "error", {}, error=message)
+    log.error("score failed: %s", message)
     print("SCORE FAILED", file=sys.stderr)
     return 1
 
 
-def _default_chat(
-    messages: list[dict[str, str]],
-    *,
-    model: str,
-    api_key: str,
-    json_mode: bool = False,
-    client=None,
-) -> str:
-    return openrouter_chat(
-        messages, model=model, api_key=api_key, json_mode=json_mode, client=client
+class _InvalidModel(Exception):
+    """The model guard refused the configured model."""
+
+
+def _build_messages(system: str, batch) -> list[dict[str, str]]:
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": "\n\n".join(_fence(r) for r in batch)},
+    ]
+
+
+def _persist_item(conn, row, parsed, models, profile) -> tuple[bool, bool]:
+    """Coerce and upsert one parsed item. Returns (persisted, relevant)."""
+    job_id, relevant, score, reasons = parsed
+    title = str(row["title"] or "") if row is not None else ""
+    description_text = str(row["description_text"] or "") if row is not None else ""
+    model_relevant = relevant
+    relevant, score, reasons = coerce_relevant(
+        title,
+        relevant,
+        score,
+        reasons,
+        profile=profile,
+        description_text=description_text,
     )
+    coerce_override = bool(model_relevant) and not relevant
+    upsert_score(
+        conn,
+        job_id,
+        models.score_model,
+        models.score_prompt_version,
+        relevant,
+        score,
+        reasons,
+    )
+    log.debug(
+        "score persist id=%s title=%s relevant=%s score=%s coerce_override=%s",
+        job_id,
+        title,
+        relevant,
+        score,
+        coerce_override,
+    )
+    if coerce_override:
+        log.info(
+            "score coerce_override id=%s title=%s relevant=%s score=%s",
+            job_id,
+            title,
+            relevant,
+            score,
+        )
+    return True, relevant
+
+
+def _score_batch(
+    conn, batch, offset, *, system, models, profile, chat_fn, api_key
+) -> tuple[int, int] | None:
+    """Score one batch. Returns (scored, relevant) or None if the batch failed.
+
+    Raises _InvalidModel when the model guard refuses the configured model.
+    """
+    batch_ids = {int(r["id"]) for r in batch}
+    try:
+        raw = chat_fn(
+            _build_messages(system, batch),
+            model=models.score_model,
+            api_key=api_key,
+            json_mode=True,
+        )
+    except OpenRouterError:
+        # Skip this batch; its jobs stay unscored and retry next run.
+        log.warning("score batch fail OpenRouterError offset=%s", offset)
+        return None
+    except ValueError as exc:
+        raise _InvalidModel from exc
+
+    items = _parse_jobs_payload(raw)
+    if items is None:
+        log.warning("score batch fail invalid JSON offset=%s", offset)
+        return None
+
+    by_id = {int(r["id"]): r for r in batch}
+    scored = relevant_n = 0
+    for item in items:
+        parsed = _score_item(item, batch_ids)
+        if parsed is None:
+            continue
+        _, relevant = _persist_item(conn, by_id.get(parsed[0]), parsed, models, profile)
+        scored += 1
+        if relevant:
+            relevant_n += 1
+    return scored, relevant_n
 
 
 def run(*, db_path: Path | None = None, chat_fn: ChatFn | None = None) -> int:
@@ -195,7 +277,7 @@ def run(*, db_path: Path | None = None, chat_fn: ChatFn | None = None) -> int:
     configure()
     injected = chat_fn is not None
     if chat_fn is None:
-        chat_fn = _default_chat
+        chat_fn = default_chat
     models = load_models()
     profile = load_profile()
 
@@ -221,83 +303,24 @@ def run(*, db_path: Path | None = None, chat_fn: ChatFn | None = None) -> int:
         system = _system_prompt(profile)
 
         for i in range(0, len(rows), batch_size):
-            batch = rows[i : i + batch_size]
-            batch_ids = {int(r["id"]) for r in batch}
-            user = "\n\n".join(_fence(r) for r in batch)
-            messages = [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ]
             try:
-                raw = chat_fn(
-                    messages,
-                    model=models.score_model,
-                    api_key=api_key,
-                    json_mode=True,
-                )
-            except OpenRouterError:
-                # Skip this batch; its jobs stay unscored and retry next run.
-                failed_batches += 1
-                log.warning("score batch fail OpenRouterError offset=%s", i)
-                continue
-            except ValueError:
-                return _fail(conn, run_id, "invalid model")
-
-            items = _parse_jobs_payload(raw)
-            if items is None:
-                failed_batches += 1
-                log.warning("score batch fail invalid JSON offset=%s", i)
-                continue
-
-            by_id = {int(r["id"]): r for r in batch}
-            for item in items:
-                parsed = _score_item(item, batch_ids)
-                if parsed is None:
-                    continue
-                job_id, relevant, score, reasons = parsed
-                row = by_id.get(job_id)
-                title = str(row["title"] or "") if row is not None else ""
-                description_text = (
-                    str(row["description_text"] or "") if row is not None else ""
-                )
-                model_relevant = relevant
-                relevant, score, reasons = coerce_relevant(
-                    title,
-                    relevant,
-                    score,
-                    reasons,
-                    profile=profile,
-                    description_text=description_text,
-                )
-                coerce_override = bool(model_relevant) and not relevant
-                upsert_score(
+                result = _score_batch(
                     conn,
-                    job_id,
-                    models.score_model,
-                    models.score_prompt_version,
-                    relevant,
-                    score,
-                    reasons,
+                    rows[i : i + batch_size],
+                    i,
+                    system=system,
+                    models=models,
+                    profile=profile,
+                    chat_fn=chat_fn,
+                    api_key=api_key,
                 )
-                log.debug(
-                    "score persist id=%s title=%s relevant=%s score=%s coerce_override=%s",
-                    job_id,
-                    title,
-                    relevant,
-                    score,
-                    coerce_override,
-                )
-                if coerce_override:
-                    log.info(
-                        "score coerce_override id=%s title=%s relevant=%s score=%s",
-                        job_id,
-                        title,
-                        relevant,
-                        score,
-                    )
-                scored += 1
-                if relevant:
-                    relevant_n += 1
+            except _InvalidModel:
+                return _fail(conn, run_id, "invalid model")
+            if result is None:
+                failed_batches += 1
+                continue
+            scored += result[0]
+            relevant_n += result[1]
 
         if failed_batches:
             log.error(

@@ -210,3 +210,15 @@ def test_summarize_system_includes_prompt_version():
     assert path == "model"
     assert seen["system"].startswith("prompt_version: v1\n")
     assert text
+
+
+def test_summarize_value_error_falls_back():
+    def chat_fn(messages, **kw):
+        raise ValueError("refused OpenRouter model: x:free")
+
+    guest = [{"id": 1, "company": "Acme", "title": "Intern", "location": "Pune", "score": 80}]
+    text, path = summarize_digest(
+        guest, chat_fn=chat_fn, model="x:free", api_key="", prompt_version="v1"
+    )
+    assert path == "fallback"
+    assert "Acme" in text

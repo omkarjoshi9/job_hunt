@@ -1,8 +1,11 @@
 import json
+
+import pytest
 from datetime import datetime, timezone
 
 from dataclasses import replace
 
+import jobdigest.bot as bot_module
 from jobdigest.bot import handle_update, poll_once
 from jobdigest.config import load_models, load_profile
 from jobdigest.db import (
@@ -17,6 +20,13 @@ from jobdigest.db import (
 
 
 NOW = datetime(2026, 9, 9, 12, 0, tzinfo=timezone.utc)
+
+
+@pytest.fixture(autouse=True)
+def _clear_no_contact_cache():
+    bot_module._NO_CONTACT.clear()
+    yield
+    bot_module._NO_CONTACT.clear()
 
 
 def _pass_job(conn, profile, *, url: str, ext: str, title: str, company: str):
@@ -1129,3 +1139,138 @@ def test_handle_update_mail_refuses_hidden(monkeypatch, tmp_path):
         conn.close()
     send = next(p for p in posts if p["url"].endswith("sendMessage"))
     assert send["json"]["text"] == "Can't draft: job is hidden."
+
+
+def _mail_setup(monkeypatch, tmp_path, ext):
+    posts = []
+
+    def http_post(url, json=None, timeout=None):
+        _ = timeout
+        posts.append({"url": url, "json": dict(json or {})})
+        return _OkPost()
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "7")
+    conn = connect(tmp_path / "jobs.db")
+    jid = _pass_job(
+        conn,
+        load_profile(),
+        url=f"https://example.com/jobs/{ext}",
+        ext=ext,
+        title="Software Engineer Intern",
+        company="Acme",
+    )
+    _score_pass(conn, jid)
+    return posts, http_post, conn, jid
+
+
+def _sent_texts(posts):
+    return [p["json"]["text"] for p in posts if p["url"].endswith("sendMessage")]
+
+
+def test_mail_negative_result_cached_no_rerun(monkeypatch, tmp_path):
+    posts, http_post, conn, jid = _mail_setup(monkeypatch, tmp_path, "mail-neg")
+    calls = []
+    monkeypatch.setattr(
+        "jobdigest.contacts.enrich_job", lambda *a, **k: calls.append(1) or []
+    )
+    try:
+        for _ in range(3):
+            handle_update(_mail_update(jid), conn=conn, now=NOW, http_post=http_post)
+    finally:
+        conn.close()
+    assert len(calls) == 1
+    assert _sent_texts(posts) == ["No hiring manager found for this job."] * 3
+
+
+def test_mail_lookup_failure_tells_user_and_is_not_cached(monkeypatch, tmp_path):
+    posts, http_post, conn, jid = _mail_setup(monkeypatch, tmp_path, "mail-fail")
+    calls = []
+
+    def boom(*a, **k):
+        calls.append(1)
+        raise RuntimeError("network")
+
+    monkeypatch.setattr("jobdigest.contacts.enrich_job", boom)
+    try:
+        handle_update(_mail_update(jid), conn=conn, now=NOW, http_post=http_post)
+        handle_update(_mail_update(jid), conn=conn, now=NOW, http_post=http_post)
+    finally:
+        conn.close()
+    assert len(calls) == 2
+    assert _sent_texts(posts) == [
+        "Can't draft: contact lookup failed. Try again later."
+    ] * 2
+
+
+def test_mail_negative_cache_expires(monkeypatch, tmp_path):
+    posts, http_post, conn, jid = _mail_setup(monkeypatch, tmp_path, "mail-ttl")
+    calls = []
+    monkeypatch.setattr(
+        "jobdigest.contacts.enrich_job", lambda *a, **k: calls.append(1) or []
+    )
+    try:
+        handle_update(_mail_update(jid), conn=conn, now=NOW, http_post=http_post)
+        for key in list(bot_module._NO_CONTACT):
+            bot_module._NO_CONTACT[key] = 0.0
+        handle_update(_mail_update(jid), conn=conn, now=NOW, http_post=http_post)
+    finally:
+        conn.close()
+    assert len(calls) == 2
+
+
+def test_unknown_callback_answered_with_text(monkeypatch, tmp_path):
+    posts = []
+
+    def http_post(url, json=None, timeout=None):
+        _ = timeout
+        posts.append({"url": url, "json": dict(json or {})})
+        return _OkPost()
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "7")
+    upd = _mail_update(1)
+    upd["callback_query"]["data"] = "zz:1"
+    conn = connect(tmp_path / "jobs.db")
+    try:
+        handle_update(upd, conn=conn, now=NOW, http_post=http_post)
+    finally:
+        conn.close()
+    answers = [p for p in posts if p["url"].endswith("answerCallbackQuery")]
+    assert len(answers) == 1 and answers[0]["json"]["text"] == "Unknown action."
+
+
+def test_open_callback_missing_job_answers_message(monkeypatch, tmp_path):
+    posts = []
+
+    def http_post(url, json=None, timeout=None):
+        _ = timeout
+        posts.append({"url": url, "json": dict(json or {})})
+        return _OkPost()
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "7")
+    upd = _mail_update(9999)
+    upd["callback_query"]["data"] = "o:9999"
+    conn = connect(tmp_path / "jobs.db")
+    try:
+        handle_update(upd, conn=conn, now=NOW, http_post=http_post)
+    finally:
+        conn.close()
+    answers = [p for p in posts if p["url"].endswith("answerCallbackQuery")]
+    assert len(answers) == 1 and answers[0]["json"]["text"] == "Job not found."
+    assert not any(p["url"].endswith("sendMessage") for p in posts)
+
+
+def test_slow_action_exception_sends_message(monkeypatch, tmp_path):
+    posts, http_post, conn, jid = _mail_setup(monkeypatch, tmp_path, "mail-exc")
+
+    def explode(*a, **k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(bot_module, "_handle_mail", explode)
+    try:
+        handle_update(_mail_update(jid), conn=conn, now=NOW, http_post=http_post)
+    finally:
+        conn.close()
+    assert _sent_texts(posts) == ["Something went wrong. Try again later."]

@@ -173,10 +173,8 @@ def _replace_values(worksheet: Any, rows: list[list[str]]) -> None:
     updater = getattr(worksheet, "update", None)
     if not callable(updater):
         raise RuntimeError("worksheet cannot update cells")
-    try:
-        worksheet.update("A1", rows)
-    except TypeError:
-        worksheet.update(rows)
+    # gspread>=6 (pinned in pyproject): update(range_name, values).
+    worksheet.update("A1", rows)
 
 
 def ensure_headers(worksheet: Any) -> None:

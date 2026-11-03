@@ -5,7 +5,8 @@ import pytest
 
 from jobdigest.ats import BambooHRAdapter, SmartRecruitersAdapter, get_adapter
 from jobdigest.ats.base import CompanyConfig
-from jobdigest.collect import _KNOWN_ATS, _board_url
+from jobdigest.ats import KNOWN_ATS
+from jobdigest.collect import _board_url
 
 
 def test_get_adapter_smartrecruiters():
@@ -26,7 +27,7 @@ def test_get_adapter_workday_and_getro_still_unimplemented():
 
 
 def test_collect_knows_smartrecruiters_board_url():
-    assert "smartrecruiters" in _KNOWN_ATS
+    assert "smartrecruiters" in KNOWN_ATS
     company = CompanyConfig(
         id="ixigo",
         name="ixigo",
@@ -49,7 +50,7 @@ def test_get_adapter_bamboohr():
 
 
 def test_collect_knows_bamboohr_board_url():
-    assert "bamboohr" in _KNOWN_ATS
+    assert "bamboohr" in KNOWN_ATS
     company = CompanyConfig(
         id="zepto",
         name="Zepto",

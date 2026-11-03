@@ -44,3 +44,43 @@ def test_domain_empty_company():
     transport = httpx.MockTransport(lambda request: httpx.Response(500))
     with httpx.Client(transport=transport) as client:
         assert domain_inference("  ", client) is None
+
+
+def test_domain_probe_rejects_redirect_to_unrelated_host():
+    def handler(request: httpx.Request) -> httpx.Response:
+        host = request.url.host or ""
+        if "autocomplete.clearbit.com" in str(request.url):
+            return httpx.Response(200, json=[])
+        if host == "acme.com":
+            return httpx.Response(302, headers={"location": "https://parked-domains.example/lander"})
+        if host == "parked-domains.example":
+            return httpx.Response(200, text="buy this domain")
+        return httpx.Response(404)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        assert domain_inference("Acme", client) is None
+
+
+def test_domain_probe_accepts_redirect_to_www_same_slug():
+    def handler(request: httpx.Request) -> httpx.Response:
+        host = request.url.host or ""
+        if "autocomplete.clearbit.com" in str(request.url):
+            return httpx.Response(200, json=[])
+        if host == "acme.com":
+            return httpx.Response(301, headers={"location": "https://www.acme.com/"})
+        if host == "www.acme.com":
+            return httpx.Response(200, text="ok")
+        return httpx.Response(404)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        assert domain_inference("Acme", client) == "acme.com"
+
+
+def test_domain_clearbit_network_error_falls_back_to_probe():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "autocomplete.clearbit.com" in str(request.url):
+            raise httpx.ConnectError("down", request=request)
+        return httpx.Response(200, text="ok") if request.url.host == "acme.com" else httpx.Response(404)
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        assert domain_inference("Acme", client) == "acme.com"

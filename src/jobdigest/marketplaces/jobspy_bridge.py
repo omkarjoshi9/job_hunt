@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from datetime import date, datetime, timezone
 from hashlib import sha256
 from typing import Any
 
-from jobdigest.ats.base import NormalizedJob, decode_html_content
+from jobdigest.ats.base import NormalizedJob, decode_html_content, parse_posted_at
 
 SITES = frozenset(
     {
@@ -49,6 +50,30 @@ def _workplace_hint(record: dict) -> str | None:
     return None
 
 
+def _posted_at(value: Any) -> str | None:
+    """Normalize date/datetime/pandas Timestamp/str/NaT/None to an ISO-Z string."""
+    if value is None:
+        return None
+    try:
+        if value != value:  # NaN / NaT
+            return None
+    except (TypeError, ValueError):
+        pass
+    to_py = getattr(value, "to_pydatetime", None)
+    if callable(to_py):
+        try:
+            value = to_py()
+        except (ValueError, TypeError):
+            return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return parse_posted_at(value.astimezone(timezone.utc).isoformat())
+    if isinstance(value, date):
+        return parse_posted_at(datetime(value.year, value.month, value.day).isoformat())
+    return parse_posted_at(value)
+
+
 def row_to_normalized(record: dict, *, source: str) -> NormalizedJob | None:
     title = str(record.get("title") or "").strip()
     if not title:
@@ -77,7 +102,7 @@ def row_to_normalized(record: dict, *, source: str) -> NormalizedJob | None:
         ats="marketplace",
         external_id=ext,
         raw_json=json.dumps(record, separators=(",", ":"), ensure_ascii=False, default=str),
-        posted_at=record.get("date_posted"),
+        posted_at=_posted_at(record.get("date_posted")),
     )
 
 

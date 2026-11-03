@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from typing import Any
@@ -43,7 +44,10 @@ def _needles(city: str) -> tuple[str, ...]:
 
 
 def _hits(hay: str, city: str) -> bool:
-    return any(needle in hay for needle in _needles(city))
+    return any(
+        re.search(r"\b" + re.escape(needle) + r"\b", hay) is not None
+        for needle in _needles(city)
+    )
 
 
 def age_chip(first_seen_at: str | None, now: datetime) -> str:

@@ -1,3 +1,5 @@
+import pytest
+
 from jobdigest.marketplaces import run_one
 from jobdigest.marketplaces.jobspy_bridge import row_to_normalized, scrape_row
 
@@ -28,7 +30,7 @@ def test_row_to_normalized_prefers_direct_url_and_marketplace_ats():
     assert job.employment_hint == "internship"
     assert job.workplace_hint == "Hybrid"
     assert "Intern role" in job.description_text
-    assert job.posted_at == "2026-09-01"
+    assert job.posted_at == "2026-09-01T00:00:00Z"
 
 
 def test_row_to_normalized_skips_untitled_and_identityless():
@@ -141,3 +143,21 @@ def test_run_one_forwards_proxies(monkeypatch):
     result = run_one({"name": "linkedin-intern-india", "site": "linkedin"}, scrape_fn=scrape_fn)
     assert result.status == "ok"
     assert captured["proxies"] == ["host:1", "user:pass@host:2"]
+
+
+def test_posted_at_normalized_for_all_input_types():
+    import datetime as dt
+
+    pd = pytest.importorskip("pandas")
+
+    from jobdigest.marketplaces.jobspy_bridge import _posted_at
+
+    assert _posted_at(dt.date(2026, 9, 1)) == "2026-09-01T00:00:00Z"
+    assert _posted_at(dt.datetime(2026, 9, 1, 12, 0, 5, 7)) == "2026-09-01T12:00:05Z"
+    assert _posted_at(pd.Timestamp("2026-09-01 12:00:00")) == "2026-09-01T12:00:00Z"
+    assert _posted_at(pd.Timestamp("2026-09-01 12:00:00", tz="Asia/Kolkata")) == "2026-09-01T06:30:00Z"
+    assert _posted_at(pd.NaT) is None
+    assert _posted_at(float("nan")) is None
+    assert _posted_at(None) is None
+    assert _posted_at("") is None
+    assert _posted_at("2026-09-01") == "2026-09-01T00:00:00Z"

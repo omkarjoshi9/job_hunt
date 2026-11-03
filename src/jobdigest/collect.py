@@ -9,7 +9,13 @@ from typing import Any
 import httpx
 
 from jobdigest.ats import get_adapter
-from jobdigest.ats.base import CompanyConfig, FetchResult, FetchStatus, NormalizedJob
+from jobdigest.ats.base import (
+    KNOWN_ATS,
+    CompanyConfig,
+    FetchResult,
+    FetchStatus,
+    NormalizedJob,
+)
 from jobdigest.ats.http_client import make_client
 from jobdigest.config import (
     load_companies,
@@ -37,10 +43,6 @@ from jobdigest.logutil import configure, get_logger
 from jobdigest.telegram import deliver as telegram_deliver
 
 log = get_logger("collect")
-
-_KNOWN_ATS = frozenset(
-    {"greenhouse", "lever", "ashby", "workable", "smartrecruiters", "bamboohr"}
-)
 
 FetchFn = Callable[
     [CompanyConfig, httpx.Client | None, Callable[[float], None]],
@@ -220,6 +222,277 @@ def _upsert_jobs(
         )
 
 
+_ZERO_STATS = {
+    "fetched": 0,
+    "inserted": 0,
+    "updated": 0,
+    "skipped": 0,
+    "pass": 0,
+    "reject": 0,
+    "errors": 0,
+    "missed": 0,
+    "tombstoned": 0,
+}
+
+
+class _Collector:
+    """Per-run state shared by the ATS, portal, feed and marketplace lanes."""
+
+    def __init__(self, conn, run_id: int, profile) -> None:
+        self.conn = conn
+        self.run_id = run_id
+        self.profile = profile
+        self.stats: dict[str, int] = dict(_ZERO_STATS)
+        self.enabled_units = 0
+        self.error_units = 0
+
+    def record_error(
+        self,
+        name: str,
+        url: str,
+        detail: str,
+        *,
+        error_class: str | None = None,
+        http_status: int | None = None,
+    ) -> None:
+        self.error_units += 1
+        self.stats["errors"] += 1
+        insert_portal_error(
+            self.conn,
+            run_id=self.run_id,
+            portal_name=name,
+            url=url,
+            error_class=error_class or _error_class(detail),
+            http_status=http_status,
+            detail=detail,
+        )
+
+    def ats_company(
+        self,
+        company: CompanyConfig,
+        company_id: int,
+        result: FetchResult,
+    ) -> None:
+        """Persist one ATS board fetch (jobs, company health, sweep)."""
+        conn = self.conn
+        status = result.status
+        complete = bool(getattr(result, "complete", True))
+        board_url = _board_url(company)
+        error = {
+            FetchStatus.DEAD_TOKEN: "dead_token",
+            FetchStatus.OK: None,
+            FetchStatus.EMPTY_BOARD: None,
+        }.get(status, result.error or "error")
+        update_company_fetch(
+            conn,
+            company_id,
+            http_status=result.http_status,
+            job_count=len(result.jobs) if status == FetchStatus.OK else 0,
+            error=error,
+            resolved_url=board_url,
+            dead_streak=_dead_streak(conn, company_id, status),
+        )
+        if status == FetchStatus.OK:
+            _upsert_jobs(
+                conn, self.profile, result.jobs, self.stats, company_id=company_id
+            )
+            _sweep_source(conn, company.id, result.jobs, self.stats, success=complete)
+        elif status == FetchStatus.EMPTY_BOARD:
+            _sweep_source(conn, company.id, [], self.stats, success=complete)
+        elif status != FetchStatus.DEAD_TOKEN:
+            self.record_error(
+                company.id,
+                board_url,
+                result.error or "error",
+                http_status=result.http_status,
+            )
+
+    def side_unit(
+        self,
+        kind: str,
+        row: dict,
+        run_fn: Callable[[dict], Any],
+        *,
+        url_key: str = "url",
+    ) -> None:
+        """Run one portal/feed/marketplace row and persist the outcome."""
+        self.enabled_units += 1
+        name = str(row.get("name") or "")
+        url = str(row.get(url_key) or "")
+        log.info("%s fetch name=%s", kind, name)
+        try:
+            result = run_fn(row)
+        except Exception as exc:
+            self.record_error(name, url, str(exc))
+            return
+        if not _result_ok(result):
+            log.info("%s error name=%s", kind, name)
+            detail = str(
+                getattr(result, "detail", None)
+                or getattr(result, "error", None)
+                or "error"
+            )
+            self.record_error(
+                name,
+                url,
+                detail,
+                error_class=getattr(result, "error_class", None) or None,
+                http_status=getattr(result, "http_status", None),
+            )
+            return
+        jobs = _result_jobs(result)
+        log.info("%s ok name=%s jobs=%s", kind, name, len(jobs))
+        _upsert_jobs(self.conn, self.profile, jobs, self.stats)
+        # NOTE: an empty "ok" result still sweeps (tests/test_tombstone.py pins
+        # this), so a silently broken parser can tombstone a source.
+        _sweep_source(self.conn, name, jobs, self.stats, success=True)
+
+    @property
+    def failed(self) -> bool:
+        return self.enabled_units > 0 and self.error_units == self.enabled_units
+
+
+def _enabled_rows(payload: Any, key: str) -> list[dict]:
+    return [row for row in _dict_rows(payload, key) if bool(row.get("enabled"))]
+
+
+def _collect_ats(
+    state: _Collector,
+    rows: list,
+    *,
+    client: httpx.Client | None,
+    sleep: Callable[[float], None],
+    fetch_fn: FetchFn,
+) -> tuple[httpx.Client | None, bool]:
+    """Fetch every enabled ATS board. Returns (client, created_client)."""
+    created = False
+    for raw in rows:
+        if not isinstance(raw, dict):
+            continue
+        company = _row_company(raw)
+        company_id = upsert_company(
+            state.conn,
+            company.id,
+            company.name,
+            company.ats,
+            company.token,
+            company.enabled,
+        )
+        ats_key = company.ats.strip().lower()
+        if not company.enabled:
+            log.debug("company skip id=%s yaml_enabled=false", company.id)
+            continue
+        if ats_key not in KNOWN_ATS:
+            log.debug("company skip id=%s unknown_ats", company.id)
+            continue
+
+        state.enabled_units += 1
+        if client is None:
+            client = make_client()
+            created = True
+
+        log.info("company fetch id=%s ats=%s", company.id, ats_key)
+        try:
+            result = fetch_fn(company, client, sleep)
+        except httpx.HTTPError as exc:
+            result = FetchResult(FetchStatus.ERROR, None, [], error=str(exc))
+        log.info(
+            "company fetch done id=%s status=%s http=%s jobs=%s complete=%s",
+            company.id,
+            result.status.value,
+            result.http_status,
+            len(result.jobs),
+            bool(getattr(result, "complete", True)),
+        )
+        state.ats_company(company, company_id, result)
+    return client, created
+
+
+def _collect_side_lanes(
+    state: _Collector,
+    *,
+    skip_portals: bool,
+    skip_feeds: bool,
+    skip_marketplaces: bool,
+    portal_fetch: tuple[str, ...] | None,
+    sleep: Callable[[float], None],
+    portal_run_fn: Callable[..., Any] | None,
+    feed_run_fn: Callable[..., Any] | None,
+    marketplace_run_fn: Callable[..., Any] | None,
+    on_bundle: Callable[[Any, Any], None],
+) -> None:
+    from jobdigest import feeds as feeds_mod
+    from jobdigest import marketplaces as marketplaces_mod
+    from jobdigest import portals as portals_pkg
+
+    portal_rows: list[dict] = []
+    if not skip_portals:
+        portal_rows = _enabled_rows(load_portals(), "portals")
+        if portal_fetch:
+            allowed = frozenset(portal_fetch)
+            portal_rows = [
+                row
+                for row in portal_rows
+                if portals_pkg.portal_fetch_mode(row) in allowed
+            ]
+    feed_rows = [] if skip_feeds else _enabled_rows(load_feeds(), "feeds")
+    marketplace_rows = (
+        [] if skip_marketplaces else _enabled_rows(load_marketplaces(), "marketplaces")
+    )
+    log.info(
+        "portals enabled=%s feeds enabled=%s marketplaces enabled=%s",
+        len(portal_rows),
+        len(feed_rows),
+        len(marketplace_rows),
+    )
+
+    bundle = None
+    if portal_run_fn is None and portal_rows:
+        modes = {
+            portals_pkg.portal_fetch_mode(row)
+            for row in portal_rows
+            if portals_pkg.portal_fetch_mode(row) in portals_pkg.ALLOWED_FETCH
+        }
+        bundle = portals_pkg.open_bundle(modes)
+    # Registered immediately so the caller can close it even if a lane raises.
+    on_bundle(portals_pkg, bundle)
+
+    last_host: dict = {}
+    robots_cache: dict[str, str] = {}
+
+    def run_portal(row: dict) -> Any:
+        if portal_run_fn is not None:
+            return portal_run_fn(row)
+        return portals_pkg.run_one(
+            row,
+            sessions=bundle,
+            sleep=sleep,
+            last_host=last_host,
+            robots_cache=robots_cache,
+        )
+
+    for row in portal_rows:
+        state.side_unit("portal", row, run_portal)
+    for row in feed_rows:
+        state.side_unit("feed", row, feed_run_fn or feeds_mod.run_one)
+    for row in marketplace_rows:
+        state.side_unit(
+            "marketplace",
+            row,
+            marketplace_run_fn or marketplaces_mod.run_one,
+            url_key="site",
+        )
+
+
+def _summary_line(status: str, stats: dict[str, int]) -> str:
+    return (
+        f"collect {status} fetched={stats['fetched']} inserted={stats['inserted']} "
+        f"updated={stats['updated']} skipped={stats['skipped']} "
+        f"pass={stats['pass']} reject={stats['reject']} "
+        f"missed={stats['missed']} tombstoned={stats['tombstoned']}"
+    )
+
+
 def run(
     *,
     db_path: Path | None = None,
@@ -239,23 +512,16 @@ def run(
 ) -> int:
     load_dotenv()
     configure()
-    if sleep is None:
-        sleep = time.sleep
-    if fetch_fn is None:
-        fetch_fn = _default_fetch
+    sleep = sleep or time.sleep
+    fetch_fn = fetch_fn or _default_fetch
     if ats_only:
-        skip_portals = True
-        skip_feeds = True
-        skip_marketplaces = True
+        skip_portals = skip_feeds = skip_marketplaces = True
 
     profile = load_profile()
     payload = load_companies()
     rows = payload.get("companies") if isinstance(payload, dict) else None
     if not isinstance(rows, list):
         rows = []
-    yaml_enabled = sum(
-        1 for raw in rows if isinstance(raw, dict) and bool(raw.get("enabled"))
-    )
     log.info(
         "collect start ats_only=%s skip_ats=%s skip_portals=%s skip_feeds=%s "
         "skip_marketplaces=%s portal_fetch=%s yaml_enabled=%s",
@@ -265,334 +531,45 @@ def run(
         skip_feeds,
         skip_marketplaces,
         portal_fetch,
-        yaml_enabled,
+        sum(1 for r in rows if isinstance(r, dict) and bool(r.get("enabled"))),
     )
 
-    own_client = False
     conn = connect(db_path)
-    run_id = insert_run(conn, "collect", "running")
-    stats = {
-        "fetched": 0,
-        "inserted": 0,
-        "updated": 0,
-        "skipped": 0,
-        "pass": 0,
-        "reject": 0,
-        "errors": 0,
-        "missed": 0,
-        "tombstoned": 0,
-    }
-    enabled_units = 0
-    error_units = 0
+    state = _Collector(conn, insert_run(conn, "collect", "running"), profile)
+    own_client = False
     status = "ok"
     error_msg: str | None = None
-    bundle = None
-    portals_mod = None
+    open_bundle: list[tuple[Any, Any]] = []
     health_footer = ""
 
     try:
-        company_rows = [] if skip_ats else rows
-        for raw in company_rows:
-            if not isinstance(raw, dict):
-                continue
-            company = _row_company(raw)
-            company_id = upsert_company(
-                conn,
-                company.id,
-                company.name,
-                company.ats,
-                company.token,
-                company.enabled,
+        client, own_client = _collect_ats(
+            state,
+            [] if skip_ats else rows,
+            client=client,
+            sleep=sleep,
+            fetch_fn=fetch_fn,
+        )
+        if not (skip_portals and skip_feeds and skip_marketplaces):
+            _collect_side_lanes(
+                state,
+                skip_portals=skip_portals,
+                skip_feeds=skip_feeds,
+                skip_marketplaces=skip_marketplaces,
+                portal_fetch=portal_fetch,
+                sleep=sleep,
+                portal_run_fn=portal_run_fn,
+                feed_run_fn=feed_run_fn,
+                marketplace_run_fn=marketplace_run_fn,
+                on_bundle=lambda mod, bundle: open_bundle.append((mod, bundle)),
             )
-            ats_key = company.ats.strip().lower()
-            if not company.enabled:
-                log.debug("company skip id=%s yaml_enabled=false", company.id)
-                continue
-            if ats_key not in _KNOWN_ATS:
-                log.debug("company skip id=%s unknown_ats", company.id)
-                continue
-
-            enabled_units += 1
-            if client is None:
-                client = make_client()
-                own_client = True
-
-            log.info("company fetch id=%s ats=%s", company.id, ats_key)
-            try:
-                result = fetch_fn(company, client, sleep)
-            except httpx.HTTPError as exc:
-                result = FetchResult(FetchStatus.ERROR, None, [], error=str(exc))
-
-            log.info(
-                "company fetch done id=%s status=%s http=%s jobs=%s complete=%s",
-                company.id,
-                result.status.value,
-                result.http_status,
-                len(result.jobs),
-                bool(getattr(result, "complete", True)),
-            )
-            board_url = _board_url(company)
-            streak = _dead_streak(conn, company_id, result.status)
-            if result.status == FetchStatus.OK:
-                update_company_fetch(
-                    conn,
-                    company_id,
-                    http_status=result.http_status,
-                    job_count=len(result.jobs),
-                    error=None,
-                    resolved_url=board_url,
-                    dead_streak=streak,
-                )
-                _upsert_jobs(conn, profile, result.jobs, stats, company_id=company_id)
-                _sweep_source(
-                    conn,
-                    company.id,
-                    result.jobs,
-                    stats,
-                    success=bool(getattr(result, "complete", True)),
-                )
-            elif result.status == FetchStatus.EMPTY_BOARD:
-                update_company_fetch(
-                    conn,
-                    company_id,
-                    http_status=result.http_status,
-                    job_count=0,
-                    error=None,
-                    resolved_url=board_url,
-                    dead_streak=streak,
-                )
-                _sweep_source(
-                    conn,
-                    company.id,
-                    [],
-                    stats,
-                    success=bool(getattr(result, "complete", True)),
-                )
-            elif result.status == FetchStatus.DEAD_TOKEN:
-                update_company_fetch(
-                    conn,
-                    company_id,
-                    http_status=result.http_status,
-                    job_count=0,
-                    error="dead_token",
-                    resolved_url=board_url,
-                    dead_streak=streak,
-                )
-            else:
-                error_units += 1
-                stats["errors"] += 1
-                detail = result.error or "error"
-                update_company_fetch(
-                    conn,
-                    company_id,
-                    http_status=result.http_status,
-                    job_count=0,
-                    error=detail,
-                    resolved_url=board_url,
-                    dead_streak=streak,
-                )
-                insert_portal_error(
-                    conn,
-                    run_id=run_id,
-                    portal_name=company.id,
-                    url=_board_url(company),
-                    error_class=_error_class(detail),
-                    http_status=result.http_status,
-                    detail=detail,
-                )
-
-        if not skip_portals or not skip_feeds or not skip_marketplaces:
-            from jobdigest import feeds as feeds_mod
-            from jobdigest import marketplaces as marketplaces_mod
-            from jobdigest import portals as portals_pkg
-
-            portals_mod = portals_pkg
-            portal_rows = []
-            if not skip_portals:
-                portal_rows = [
-                    row
-                    for row in _dict_rows(load_portals(), "portals")
-                    if bool(row.get("enabled"))
-                ]
-                if portal_fetch:
-                    allowed = frozenset(portal_fetch)
-                    portal_rows = [
-                        row
-                        for row in portal_rows
-                        if portals_pkg.portal_fetch_mode(row) in allowed
-                    ]
-            feed_rows = []
-            if not skip_feeds:
-                feed_rows = [
-                    row
-                    for row in _dict_rows(load_feeds(), "feeds")
-                    if bool(row.get("enabled"))
-                ]
-            marketplace_rows = []
-            if not skip_marketplaces:
-                marketplace_rows = [
-                    row
-                    for row in _dict_rows(load_marketplaces(), "marketplaces")
-                    if bool(row.get("enabled"))
-                ]
-            log.info(
-                "portals enabled=%s feeds enabled=%s marketplaces enabled=%s",
-                len(portal_rows),
-                len(feed_rows),
-                len(marketplace_rows),
-            )
-            last_host: dict = {}
-            robots_cache: dict[str, str] = {}
-            if portal_run_fn is None and portal_rows:
-                modes = {
-                    portals_pkg.portal_fetch_mode(row)
-                    for row in portal_rows
-                    if portals_pkg.portal_fetch_mode(row) in portals_pkg.ALLOWED_FETCH
-                }
-                bundle = portals_pkg.open_bundle(modes)
-
-            for row in portal_rows:
-                enabled_units += 1
-                name = str(row.get("name") or "")
-                url = str(row.get("url") or "")
-                log.info("portal fetch name=%s", name)
-                try:
-                    if portal_run_fn is not None:
-                        result = portal_run_fn(row)
-                    else:
-                        result = portals_pkg.run_one(
-                            row,
-                            sessions=bundle,
-                            sleep=sleep,
-                            last_host=last_host,
-                            robots_cache=robots_cache,
-                        )
-                except Exception as exc:
-                    error_units += 1
-                    stats["errors"] += 1
-                    insert_portal_error(
-                        conn,
-                        run_id=run_id,
-                        portal_name=name,
-                        url=url,
-                        error_class=_error_class(str(exc)),
-                        http_status=None,
-                        detail=str(exc),
-                    )
-                    continue
-                if _result_ok(result):
-                    portal_jobs = _result_jobs(result)
-                    log.info("portal ok name=%s jobs=%s", name, len(portal_jobs))
-                    _upsert_jobs(conn, profile, portal_jobs, stats)
-                    _sweep_source(conn, name, portal_jobs, stats, success=True)
-                else:
-                    error_units += 1
-                    stats["errors"] += 1
-                    log.info("portal error name=%s", name)
-                    detail = str(getattr(result, "detail", None) or getattr(result, "error", None) or "error")
-                    insert_portal_error(
-                        conn,
-                        run_id=run_id,
-                        portal_name=name,
-                        url=url,
-                        error_class=str(getattr(result, "error_class", None) or _error_class(detail)),
-                        http_status=getattr(result, "http_status", None),
-                        detail=detail,
-                    )
-
-            for row in feed_rows:
-                enabled_units += 1
-                name = str(row.get("name") or "")
-                url = str(row.get("url") or "")
-                log.info("feed fetch name=%s", name)
-                try:
-                    if feed_run_fn is not None:
-                        result = feed_run_fn(row)
-                    else:
-                        result = feeds_mod.run_one(row)
-                except Exception as exc:
-                    error_units += 1
-                    stats["errors"] += 1
-                    insert_portal_error(
-                        conn,
-                        run_id=run_id,
-                        portal_name=name,
-                        url=url,
-                        error_class=_error_class(str(exc)),
-                        http_status=None,
-                        detail=str(exc),
-                    )
-                    continue
-                if _result_ok(result):
-                    feed_jobs = _result_jobs(result)
-                    log.info("feed ok name=%s jobs=%s", name, len(feed_jobs))
-                    _upsert_jobs(conn, profile, feed_jobs, stats)
-                    _sweep_source(conn, name, feed_jobs, stats, success=True)
-                else:
-                    error_units += 1
-                    stats["errors"] += 1
-                    log.info("feed error name=%s", name)
-                    detail = str(getattr(result, "detail", None) or getattr(result, "error", None) or "error")
-                    insert_portal_error(
-                        conn,
-                        run_id=run_id,
-                        portal_name=name,
-                        url=url,
-                        error_class=str(getattr(result, "error_class", None) or "http"),
-                        http_status=getattr(result, "http_status", None),
-                        detail=detail,
-                    )
-
-            for row in marketplace_rows:
-                enabled_units += 1
-                name = str(row.get("name") or "")
-                site = str(row.get("site") or "")
-                log.info("marketplace fetch name=%s site=%s", name, site)
-                try:
-                    if marketplace_run_fn is not None:
-                        result = marketplace_run_fn(row)
-                    else:
-                        result = marketplaces_mod.run_one(row)
-                except Exception as exc:
-                    error_units += 1
-                    stats["errors"] += 1
-                    insert_portal_error(
-                        conn,
-                        run_id=run_id,
-                        portal_name=name,
-                        url=site,
-                        error_class=_error_class(str(exc)),
-                        http_status=None,
-                        detail=str(exc),
-                    )
-                    continue
-                if _result_ok(result):
-                    marketplace_jobs = _result_jobs(result)
-                    log.info("marketplace ok name=%s jobs=%s", name, len(marketplace_jobs))
-                    _upsert_jobs(conn, profile, marketplace_jobs, stats)
-                    _sweep_source(conn, name, marketplace_jobs, stats, success=True)
-                else:
-                    error_units += 1
-                    stats["errors"] += 1
-                    log.info("marketplace error name=%s", name)
-                    detail = str(getattr(result, "detail", None) or getattr(result, "error", None) or "error")
-                    insert_portal_error(
-                        conn,
-                        run_id=run_id,
-                        portal_name=name,
-                        url=site,
-                        error_class=str(getattr(result, "error_class", None) or _error_class(detail)),
-                        http_status=getattr(result, "http_status", None),
-                        detail=detail,
-                    )
-
-        if enabled_units > 0 and error_units == enabled_units:
+        if state.failed:
             status = "error"
             error_msg = "COLLECT FAILED"
     finally:
-        if portals_mod is not None:
-            portals_mod.close_bundle(bundle)
-        finish_run(conn, run_id, status, stats, error=error_msg)
+        for mod, bundle in open_bundle:
+            mod.close_bundle(bundle)
+        finish_run(conn, state.run_id, status, state.stats, error=error_msg)
         try:
             text = format_health(collect_health(conn))
             if text != HEALTHY:
@@ -603,33 +580,17 @@ def run(
         if own_client and client is not None:
             client.close()
 
-    line = (
-        f"collect {status} fetched={stats['fetched']} inserted={stats['inserted']} "
-        f"updated={stats['updated']} skipped={stats['skipped']} "
-        f"pass={stats['pass']} reject={stats['reject']} "
-        f"missed={stats['missed']} tombstoned={stats['tombstoned']}"
-    )
+    stats = state.stats
     log.info(
-        "collect done status=%s fetched=%s inserted=%s updated=%s skipped=%s "
-        "pass=%s reject=%s errors=%s missed=%s tombstoned=%s",
+        "collect done status=%s %s",
         status,
-        stats["fetched"],
-        stats["inserted"],
-        stats["updated"],
-        stats["skipped"],
-        stats["pass"],
-        stats["reject"],
-        stats["errors"],
-        stats["missed"],
-        stats["tombstoned"],
+        " ".join(f"{k}={v}" for k, v in stats.items()),
     )
-    print(line)
+    print(_summary_line(status, stats))
     if health_footer:
         print(health_footer)
     if status == "error":
         print("COLLECT FAILED", file=sys.stderr)
-        telegram_deliver(
-            "COLLECT FAILED", required=True, http_post=telegram_http_post
-        )
+        telegram_deliver("COLLECT FAILED", required=True, http_post=telegram_http_post)
         return 1
     return 0

@@ -61,11 +61,13 @@ def test_run_pipeline_never_raises_and_merges():
     assert "Priya Sharma" in names
     assert names["Priya Sharma"].source == "jd"
     assert names["Priya Sharma"].email == "priya.sharma@acme.com"
-    assert names["Priya Sharma"].confidence == 100.0
+    # email is constructed from the pattern, so confidence is capped
+    assert names["Priya Sharma"].confidence == 40.0
+    assert names["Priya Sharma"].email_inferred is True
     assert "Jane Talent" in names
     assert names["Jane Talent"].source == "github"
-    assert names["Jane Talent"].confidence == 70.0
-    assert names["Arun Mehta"].confidence == 90.0
+    assert names["Jane Talent"].confidence == 40.0  # constructed email -> capped
+    assert names["Arun Mehta"].confidence == 40.0
 
 
 def test_run_pipeline_swallows_http_errors():
@@ -181,3 +183,32 @@ def test_enrich_job_reads_description():
             github_token_value="",
         )
     assert any(c.name == "Priya Sharma" for c in found)
+
+
+def test_merge_observed_email_keeps_full_confidence_constructed_is_capped():
+    merged = merge_contacts(
+        jd=[
+            DiscoveredContact(name="Priya Sharma", source="jd", role="Hiring Manager", confidence=100),
+            DiscoveredContact(
+                name="Arun Mehta", source="jd", role="Recruiter", email="arun@acme.com", confidence=90
+            ),
+        ],
+        github=[],
+        company="Acme",
+        domain="acme.com",
+        pattern="{first}.{last}@acme.com",
+    )
+    by = {c.name: c for c in merged}
+    assert by["Arun Mehta"].confidence == 90.0 and not by["Arun Mehta"].email_inferred
+    assert by["Priya Sharma"].confidence == 40.0 and by["Priya Sharma"].email_inferred
+
+
+def test_merge_without_pattern_has_no_email_and_full_confidence():
+    merged = merge_contacts(
+        jd=[DiscoveredContact(name="Priya Sharma", source="jd", confidence=100)],
+        github=[],
+        company="Acme",
+        domain=None,
+        pattern=None,
+    )
+    assert merged[0].email is None and merged[0].confidence == 100.0
