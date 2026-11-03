@@ -1,0 +1,55 @@
+name: bot
+# Answers Telegram button taps (Save / Applied / Hide / Why me / Mail). Without a
+# running poller those buttons do nothing, so this long-polls for ~55 minutes and is
+# restarted every hour. Taps made between runs wait in Telegram and are handled at
+# the next start. Needs the same DATABASE_URL as the pipeline workflow.
+on:
+  schedule:
+    - cron: "5 * * * *"
+  workflow_dispatch:
+concurrency:
+  group: jobdigest-bot
+  cancel-in-progress: false
+jobs:
+  bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 62
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e .
+      - name: Require shared database
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "DATABASE_URL secret is empty: the bot would not see the jobs the pipeline sends, so every button would fail. Set it to the same Postgres URL the pipeline uses." >&2
+            exit 1
+          fi
+      - name: Write private config
+        env:
+          PROFILE_YAML: ${{ secrets.PROFILE_YAML }}
+          MODELS_YAML: ${{ secrets.MODELS_YAML }}
+        run: |
+          python <<'PY'
+          import os
+          import sys
+          from pathlib import Path
+
+          files = {"PROFILE_YAML": "config/profile.yaml", "MODELS_YAML": "config/models.yaml"}
+          missing = [key for key in files if not (os.environ.get(key) or "").strip()]
+          if missing:
+              print("required config secrets missing: " + ", ".join(missing), file=sys.stderr)
+              sys.exit(1)
+          for key, rel in files.items():
+              Path(rel).write_text(os.environ[key], encoding="utf-8")
+          PY
+      - run: python -m jobdigest.bot --max-seconds 3300
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          JOBDIGEST_GITHUB_TOKEN: ${{ secrets.JOBDIGEST_GITHUB_TOKEN }}
